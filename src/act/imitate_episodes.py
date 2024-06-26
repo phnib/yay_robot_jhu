@@ -178,14 +178,14 @@ def main(args):
                 with open(wandb_run_id_path, "r") as f:
                     saved_run_id = f.read().strip()
                 wandb.init(
-                    project="yay-robot",
+                    project="yay-surgical-robot",
                     entity="$WANDB_ENTITY",
                     name=run_name,
                     resume=saved_run_id,
                 )
             else:
                 wandb.init(
-                    project="yay-robot",
+                    project="yay-surgical-robot",
                     entity="$WANDB_ENTITY",
                     name=run_name,
                     config=args,

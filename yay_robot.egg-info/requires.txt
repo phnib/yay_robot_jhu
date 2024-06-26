@@ -3,15 +3,13 @@ torchvision
 tqdm
 wandb
 ipdb
-numpy==1.23.1 # for h5py_cache
+numpy==1.23.1
 matplotlib
-moviepy 
+moviepy
 imageio
 opencv-python
 openai-whisper
 gym
-
-# act
 pyquaternion
 pyyaml
 rospkg
@@ -22,31 +20,12 @@ einops
 packaging
 h5py
 ipython
-
-# aloha
 modern_robotics
 pyrealsense2
 h5py_cache
-
-# # record audio
-# sounddevice
-# wavio
-# pyaudio
-# SpeechRecognition
-# roslibpy
-
-# keyboard input
 pynput
-
-# memory
 psutil
-
-# llm
 transformers
-
-# clip
 ftfy
-clip@git+https://github.com/openai/CLIP.git
-
-# instructor
+clip@ git+https://github.com/openai/CLIP.git
 scikit-learn

@@ -243,7 +243,7 @@ if __name__ == "__main__":
     # Dataset and Dataloader parameters
     dataset_dir = "/scr/lucyshi/dataset/aloha_bag_3_objects"
     num_episodes = 10
-    camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
+    camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"] 
     batch_size_train = 8
     batch_size_val = 8
 

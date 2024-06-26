@@ -1,0 +1,8 @@
+README.md
+setup.py
+yay_robot.egg-info/PKG-INFO
+yay_robot.egg-info/SOURCES.txt
+yay_robot.egg-info/dependency_links.txt
+yay_robot.egg-info/not-zip-safe
+yay_robot.egg-info/requires.txt
+yay_robot.egg-info/top_level.txt
