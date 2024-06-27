@@ -1,12 +1,12 @@
 """
 Example usage:
 
+# TODO: Give a new example usage command
 python instructor/train.py \
     --task_name aloha_bag_3_objects aloha_bag_3_objects_d1_v0 aloha_bag_3_objects_d1_v1 aloha_bag_3_objects_d1_v2 \
     --ckpt_dir /scr/lucyshi/hl_ckpt/aloha_bag_v0_v1_v2_his_2_sf_50_offset_10_lr \
     --batch_size 16 --num_epochs 1000  --lr 1e-4 \
     --seed 0 --gpu 1 --test_only 
-
 """
 import torch
 import torch.optim as optim
@@ -46,7 +46,7 @@ def train(model, dataloader, optimizer, criterion, device):
         optimizer.zero_grad()
         logits, temperature = model(images)
 
-        # TODO: Remove this as not needed for us - do the same in the other functions
+        # TODO: add here dict of possible replacements
         # Convert ground truth command strings to indices using the pre-computed dictionary
         commands_idx = [
             model.command_to_index[
@@ -129,6 +129,7 @@ def test(model, dataloader, device, current_epoch):
                 total_predictions += 1
                 print(f"Ground truth: {gt} \t Predicted text: {pred}")
 
+    # TODO: Add the visualization of the embeddings again - or just add it too WandB
     # Visualize embeddings
     # tsne_visualize(predicted_embeddings, gt_embeddings, candidate_embeddings, current_epoch)
 
@@ -158,14 +159,6 @@ def latest_checkpoint(ckpt_dir):
 
     latest_idx = max(epoch_numbers)
     return os.path.join(ckpt_dir, f"epoch_{latest_idx}.ckpt"), latest_idx
-
-
-def load_candidate_texts(file_path):
-    with open(file_path, "r") as f:
-        lines = f.readlines()
-        # Extract the instruction (text before the colon), strip whitespace, and then strip quotation marks
-        candidate_texts = [line.split(":")[0].strip().strip("'\"") for line in lines]
-    return candidate_texts
 
 
 def save_combined_image(image, gt_text, pred_text, save_path=None):
@@ -250,7 +243,19 @@ def tsne_visualize(predicted_embeddings, gt_embeddings, candidate_embeddings, ep
         )
 
 
+# TODO: Still needed or reading this out on the run from the datasets?
+def load_candidate_texts(file_path):
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+        # Extract the instruction (text before the colon), strip whitespace, and then strip quotation marks
+        candidate_texts = [line.split(":")[0].strip().strip("'\"") for line in lines]
+    return candidate_texts
+
+
+# TODO: Still needed or reading this out on the run from the datasets?
 def load_candidate_texts_and_embeddings(dataset_dirs, device=torch.device("cuda")):
+    # TODO: Get these from the dataset
+    
     candidate_texts = []
     candidate_embeddings = []
 
@@ -291,6 +296,7 @@ def load_candidate_texts_and_embeddings(dataset_dirs, device=torch.device("cuda"
 
 def build_instructor(dataset_dirs, history_len, device):
     # Load candidate texts and embeddings
+    # TODO: Probably rather get the text and embeddings from the datasets - change the function?
     candidate_texts, candidate_embeddings = load_candidate_texts_and_embeddings(
         dataset_dirs, device=device
     )
@@ -308,6 +314,9 @@ def build_instructor(dataset_dirs, history_len, device):
 
 
 if __name__ == "__main__":
+    from instructor.utils import set_seed
+    from aloha_pro.aloha_scripts.constants import TASK_CONFIGS # get task parameters
+    
     threading.Thread(target=memory_monitor, daemon=True).start()
 
     parser = argparse.ArgumentParser(description="Train and evaluate command prediction model using CLIP.")
@@ -319,48 +328,52 @@ if __name__ == "__main__":
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0)
-    parser.add_argument('--history_len', action='store', type=int, help='history_len', default=1)
+    parser.add_argument('--history_len', action='store', type=int, help='history_len', default=3)
     parser.add_argument('--prediction_offset', action='store', type=int, help='prediction_offset', default=15)
     parser.add_argument('--history_skip_frame', action='store', type=int, help='history_skip_frame', default=30)
     parser.add_argument('--test_only', action='store_true', help='Test the model using the latest checkpoint and exit')
-    parser.add_argument('--random_crop', action='store_true')
-    parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None)
+    parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None) # TODO: Still needed?
+    # TODO: Maybe add later a list of transformations/augmentations that should be applied as arg
 
     args = parser.parse_args()
 
-    # Setting seed
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
+    # Set seed
+    set_seed(args.seed)
 
     # Device setting
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
-    # get task parameters
-    from aloha_pro.aloha_scripts.constants import TASK_CONFIGS
-
-    # TODO: Maybe just call it chole_clipping_cutting for now and maybe later add the chole_dissection or chole_gallbladder_removal too
     dataset_dirs = []
     num_episodes_list = []
-    max_episode_len = 0
 
     for task in args.task_name:
         task_config = TASK_CONFIGS[task]
         dataset_dirs.append(task_config["dataset_dir"])
         num_episodes_list.append(task_config["num_episodes"])
-        max_episode_len = max(max_episode_len, task_config["episode_len"])
         camera_names = task_config["camera_names"]
         camera_file_suffixes = task_config["camera_file_suffixes"]
     ckpt_dir = args.ckpt_dir
-    dagger_ratio = args.dagger_ratio
+    dagger_ratio = args.dagger_ratio # TODO: Still needed?
 
     # TODO: Add here the transformations that should be applied
+    # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
+    # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
+    framewise_transforms = []
+    framewise_transforms.append(transforms.RandomRotation(30))
+    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    # framewise_transforms.append(v2.RandomPerspective(p=0.5))
+    # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
+    framewise_transforms = transforms.Compose(framewise_transforms)
 
     # Data loading
     # TODO: For testing purpose maybe use a small batch size and prefetch factor
     if not args.test_only:
-        train_dataloader, val_dataloader = load_merged_data(
+        train_dataloader, val_dataloader, (candidate_embeddings, candidate_texts) = load_merged_data(
             dataset_dirs=dataset_dirs,
             num_episodes_list=num_episodes_list,
             camera_names=camera_names,
@@ -371,11 +384,11 @@ if __name__ == "__main__":
             prediction_offset=args.prediction_offset,
             history_skip_frame=args.history_skip_frame,
             test_only=args.test_only,
-            random_crop=args.random_crop,
+            framewise_transforms=framewise_transforms,
             dagger_ratio=dagger_ratio,
         )
     else:
-        test_dataloader = load_merged_data(
+        test_dataloader, (candidate_embeddings, candidate_texts) = load_merged_data(
             dataset_dirs=dataset_dirs,
             num_episodes_list=num_episodes_list,
             camera_names=camera_names,
@@ -385,12 +398,12 @@ if __name__ == "__main__":
             prediction_offset=args.prediction_offset,
             history_skip_frame=args.history_skip_frame,
             test_only=args.test_only,
-            random_crop=args.random_crop,
+            framewise_transforms=framewise_transforms,
             test_only=True,
         )
 
     model = build_instructor(dataset_dirs, args.history_len, device)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr) # TODO: Add here later also further parameters like weight decay, ..
     criterion = torch.nn.CrossEntropyLoss()
 
     # WandB initialization
@@ -418,11 +431,12 @@ if __name__ == "__main__":
             with open(wandb_run_id_path, "w") as f:
                 f.write(wandb.run.id)
 
+    # Load the most recent checkpoint if available
     if not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
         latest_idx = 0
     else:
-        # Load the most recent checkpoint if available # TODO: Why that?
+        # Load the most recent checkpoint if available # TODO: Later rather load the best model based on the validation loss?!
         latest_ckpt, latest_idx = latest_checkpoint(args.ckpt_dir)
         if latest_ckpt:
             print(f"Loading checkpoint: {latest_ckpt}")
@@ -431,10 +445,12 @@ if __name__ == "__main__":
             print("No checkpoint found.")
             latest_idx = 0
 
+    # Create a directory to save predictions for the current run
     predictions_dir = os.path.join(ckpt_dir, "predictions")
     if not os.path.exists(predictions_dir):
         os.makedirs(predictions_dir)
 
+    # Test the model using the latest checkpoint - don't train
     if args.test_only:
         test(model, test_dataloader, device, latest_idx)
         exit()
@@ -463,6 +479,7 @@ if __name__ == "__main__":
             ckpt_path = os.path.join(ckpt_dir, f"epoch_{epoch}.ckpt")
             torch.save(model.state_dict(), ckpt_path)
 
+            # TODO: Rather keeping the best model based on the validation loss?! + early stopping?!
             # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
             # except for the ones at multiples of prune_freq epochs
             prune_freq = 300

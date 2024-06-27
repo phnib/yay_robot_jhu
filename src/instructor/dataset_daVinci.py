@@ -16,7 +16,7 @@ if path_to_yay_robot:
     sys.path.append(os.path.join(path_to_yay_robot, 'src'))
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
-from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
+from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
 from instructor.utils import center_crop_resize
 # from act.utils import DAggerSampler
     
@@ -38,17 +38,27 @@ def split_tissue_samples(dataset_dir, num_tissue_samples, train_ratio, val_ratio
     num_test = num_tissue_samples - num_train - num_val
 
     # Generate a list of indices and shuffle them
-    all_indices = list(range(num_tissue_samples))
+    all_indices = list(range(1, num_tissue_samples+1))
     np.random.shuffle(all_indices)
 
     # Split the indices based on the calculated numbers
     # TODO: Check if the indices are the same for every training (by using the seed) even when training on a different machine - e.g., otherwise introducing bias when resuming training from last checkpoint
     # TODO: Alternative would be fixed indices for each tissue sample (but randomized assuming that the execution of the surgerymight evolve over newer tissue samples)
-    train_indices = [(dataset_dir, idx) for idx in all_indices[:num_train]]
-    val_indices = [(dataset_dir, idx) for idx in all_indices[num_train:num_train + num_val]]
-    test_indices = [(dataset_dir, idx) for idx in all_indices[num_train + num_val:]]
+    train_indices = [idx for idx in all_indices[:num_train]]
+    val_indices = [idx for idx in all_indices[num_train:num_train + num_val]]
+    test_indices = [idx for idx in all_indices[num_train + num_val:]]
 
     return train_indices, val_indices, test_indices
+
+def extract_candidate_embeddings_and_commands(command_embeddings_dict):
+    # Extract the candidate embeddings and commands
+    candidate_embeddings = []
+    candidate_texts = []
+    for _, (phase_command, phase_embedding) in command_embeddings_dict.items():
+        candidate_embeddings.append(torch.tensor(phase_embedding).squeeze())
+        candidate_texts.append(phase_command)
+    
+    return torch.stack(candidate_embeddings), candidate_texts
 
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
@@ -189,7 +199,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         return image_sequence, command_embedding, command_gt
 
 
-# TODO: Check also if this works correctly
 def load_merged_data(
     dataset_dirs,
     num_episodes_list,
@@ -205,15 +214,15 @@ def load_merged_data(
     dagger_ratio=None, # TODO: Do we need it?
 ):
     print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
-    if random_crop:
-        print(f"Random crop enabled")
+
     # if dagger_ratio is not None: # TODO: do we need it?
     #     assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
     
-    # TODO: Adjust maybe later for debugging with a smaller number of tissues
+    # TODO: Make it running with my debugging dataset
+    # TODO: Later reset again to reasonable splits
     # Obtain train/val/test split
-    train_ratio = 0.90
-    val_ratio = 0.05
+    train_ratio = 1/3 # 0.90
+    val_ratio = 1/3 # 0.05
     test_ratio = 1 - train_ratio - val_ratio
 
     # Construct the datasets and the dataset embeddings
@@ -264,8 +273,6 @@ def load_merged_data(
             if train_commands != val_commands:
                 raise ValueError(f"Commands for validation does not match training commands.")
             
-            # TODO: Check whether the embeddings for the same command are the same in train and val datasets
-            
             # Update the command embeddings dictionary
             command_embeddings_dict.update(train_command_embeddings_dict)
             
@@ -311,7 +318,10 @@ def load_merged_data(
             persistent_workers=True,
         )
         
-        return train_dataloader, val_dataloader, command_embeddings_dict
+        # Extract the candidate embeddings and commands
+        candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        
+        return train_dataloader, val_dataloader, (candidate_embeddings, candidate_texts)
     
     else:
         # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
@@ -326,7 +336,10 @@ def load_merged_data(
             prefetch_factor=1,
         )
         
-        return test_dataloader, command_embeddings_dict
+        # Extract the candidate embeddings and commands
+        candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        
+        return test_dataloader, (candidate_embeddings, candidate_texts)
 
 
 """
