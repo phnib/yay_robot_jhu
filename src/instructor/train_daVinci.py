@@ -357,8 +357,8 @@ if __name__ == "__main__":
 
     # TODO: Add here the transformations that should be applied
 
-    # TODO: Give the parameter test only to the script - to either load train and val or just test
     # Data loading
+    # TODO: For testing purpose maybe use a small batch size and prefetch factor
     if not args.test_only:
         train_dataloader, val_dataloader = load_merged_data(
             dataset_dirs=dataset_dirs,

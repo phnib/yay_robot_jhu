@@ -1,9 +1,18 @@
+import sys
+
 import torch
 import torch.nn as nn
 import numpy as np
 from clip import load
 import torchvision.transforms as transforms
 import random
+
+# import aloha
+path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
+if path_to_yay_robot:
+    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
+else:
+    raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 
 clip_transform = transforms.Compose(
     [
@@ -233,35 +242,114 @@ def count_parameters(model):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total_params, trainable_params
 
-# TODO: Make that work
-# Example usage:
-if __name__ == "__main__":
-    import os
-    from pathlib import Path
-    from instructor.dataset_daVinci import load_merged_data
 
-    # Dataset and Dataloader parameters
-    dataset_dir = os.getenv("PATH_TO_DATASET")
-    num_episodes = 10
+# Example usage:
+if __name__ == "__main__":      
+    import os
+    import matplotlib.pyplot as plt
+    from torchvision.transforms import v2
+    
+    from instructor.dataset_daVinci import load_merged_data
+    from instructor.utils import set_seed
+
+    # TODO: Check gpu usage
+
+    seed = 42
+    set_seed(seed)    
+
+    # Parameters for the test
+    datasets_dir = os.getenv("PATH_TO_DATASET")
+    tissue_samples_ids = [1]
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-    batch_size_train = 8
-    batch_size_val = 8
+    history_len = 3
+    prediction_offset = 0 # Get command for the current timestep
+    history_skip_frame = 30
+    num_episodes = 200 # Number of randlomy generated stitched episodes
+
+    # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
+    framewise_transforms = []
+    framewise_transforms.append(transforms.RandomRotation(30))
+    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    framewise_transforms.append(v2.RandomPerspective(p=0.5))
+    framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
+    framewise_transforms = transforms.Compose(framewise_transforms)
+
+    # Dataset and Dataloader parameters
+    datasets_dir = [os.getenv("PATH_TO_DATASET")]
+    num_episodes_list = [200]*len(datasets_dir)
+    camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
+    camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
+    batch_size_train = 4
+    batch_size_val = 4
 
     # Load the dataloader
-    train_dataloader, val_dataloader = load_merged_data()
+    train_dataloader, _ = load_merged_data(
+        dataset_dirs=datasets_dir,
+        num_episodes_list=num_episodes_list,
+        camera_names=camera_names,
+        camera_file_suffixes=camera_file_suffixes,
+        history_len=history_len,
+        prediction_offset=prediction_offset,
+        history_skip_frame=history_skip_frame,
+        batch_size_train=batch_size_train,
+        batch_size_val=batch_size_val,
+        framewise_transforms=framewise_transforms,
+    )
     
-    
+    # TODO: How does this work with candidate embeddings, ..
+    # TODO: Init candidate embeddings, candidate_texts, command_to_index
     # Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Instructor(device=device, history_len=5)
+    # TODO: Give more parameters - candidate_embeddings, candidate_texts, command_to_index
+    model = Instructor(
+        device=device,
+        history_len=5,
+        candidate_embeddings=candidate_embeddings,
+        candidate_texts=candidate_texts,
+        command_to_index=command_to_index
+    )
     model.to(device)
 
     # Fetch a batch of data and pass it through the model
-    for image_data, language_data, _ in train_dataloader:
-        image_data = image_data.to(device)
-        predictions = model(image_data)
-        print(f"Image data shape: {image_data.shape}")
-        print(f"Language data shape: {language_data.shape}")
+    for image_sequence, command_embedding, gt_command in train_dataloader:
+        image_sequence = image_sequence.to(device)
+        predictions = model(image_sequence)
+        print(f"Image sequence shape: {image_sequence.shape}")
+        print(f"Language data shape: {command_embedding.shape}")
         print(f"Predictions shape: {predictions.shape}")
+        print("---------")
+        print(f"Ground truth command ({prediction_offset=}): {gt_command}")
+        print(f"Predicted command [untrained] ({prediction_offset=}): {model.decode_logits(predictions)}")
         break
+
+    # Create a figure with subplots: one row per timestamp, one column per camera
+    fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
+    if history_len == 0:
+        axes = axes[np.newaxis, :]
+
+    # Loop over each timestamp and camera to plot the images
+    for t in range(history_len + 1):
+        for cam_idx, cam_name in enumerate(camera_names):
+            ax = axes[t, cam_idx]  # Get the specific subplot axis
+            img = image_sequence[t, cam_idx].permute(1, 2, 0).numpy()
+            ax.imshow(img)
+            ax.set_title(f"{cam_name} at timestep {t}")
+            ax.axis('off')  # Optionally turn off the axis
+
+    # Set title to command
+    fig.suptitle(f"Gt Command: {gt_command} - Prediction [untrained]: {model.decode_logits(predictions)}")
+    plt.tight_layout()
+    example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "untrained_model_pred")
+    if not os.path.exists(example_dataset_plots_folder_path):
+        os.makedirs(example_dataset_plots_folder_path)
+    file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{history_len=}_{history_skip_frame=}.png")
+    file_path = os.path.join(example_dataset_plots_folder_path, file_name)
+    plt.savefig(file_path)
+    print(f"Saved {file_name}.")
+    plt.close(fig)  # Close the figure to free memory

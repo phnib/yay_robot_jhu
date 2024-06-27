@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import torch
 from torchvision import transforms
+from torchvision.transforms import v2
 from torch.utils.data import DataLoader, ConcatDataset
 
 # import aloha
@@ -16,6 +17,7 @@ if path_to_yay_robot:
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
+from instructor.utils import center_crop_resize
 # from act.utils import DAggerSampler
     
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
@@ -166,7 +168,9 @@ class SequenceDataset(torch.utils.data.Dataset):
                 cam_folder = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, cam_name)
                 frame_path = os.path.join(cam_folder, f"frame{str(ts_demo_frame_idx).zfill(6)}{cam_file_suffix}")
                 img = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
-                img_resized_224 = transforms.Resize((224, 224))(img)
+                # TODO: Decide for either normal resize or to do a center crop and resize?
+                # img_resized_224 = transforms.Resize((224, 224))(img)
+                img_resized_224 = center_crop_resize(img, 224)
                 image_dict[cam_name] = img_resized_224
                 
             all_cam_images = [
@@ -183,6 +187,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         return image_sequence, command_embedding, command_gt
 
 
+# TODO: Check also if this works correctly
 def load_merged_data(
     dataset_dirs,
     num_episodes_list,
@@ -249,7 +254,6 @@ def load_merged_data(
             merged_train_dataset = ConcatDataset(train_datasets)
             merged_val_dataset = ConcatDataset(val_datasets)
             
-            # TODO: For testing purpose maybe use a small batch size and prefetch factor
             train_dataloader = DataLoader(
                 merged_train_dataset,
                 batch_size=batch_size_train,
@@ -299,14 +303,15 @@ def load_merged_data(
         return test_dataloader
 
 
-# TODO: Add here later the first test for the dataset
 """
 Test the SequenceDataset class.
 """
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
+    from instructor.utils import set_seed
 
     seed = 42
+    set_seed(seed)
 
     # Parameters for the test
     dataset_dir = os.getenv("PATH_TO_DATASET")
@@ -318,19 +323,18 @@ if __name__ == "__main__":
     history_skip_frame = 30
     num_episodes = 200 # Number of randlomy generated stitched episodes
 
-    # Define transforms/augmentations
+    # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
+    # TODO: Decide for the best augmentations
     framewise_transforms = []
-    framewise_transforms.append(transforms.Resize((224, 224))) # TODO: Instead of just resize do center crop and resize?
     framewise_transforms.append(transforms.RandomRotation(30))
     framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # TODO: Check if these exists - and which to take
-    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomPerspective()], p=0.5))
-    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomPosterize(bits=7)], p=0.25))
-    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomAdjustSharpness(2)], p=0.25))
-    # dataset_transforms.append(transforms.RandomApply([transforms.v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomZoomOut()], p=0.75))
-    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomPhotometricDistort()], p=0.8))
-    # dataset_transforms.append(transforms.RandomGrayscale(p=0.2))
+    framewise_transforms.append(v2.RandomPerspective(p=0.5))
+    framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
     framewise_transforms = transforms.Compose(framewise_transforms)
 
     # Create a SequenceDataset instance
@@ -352,6 +356,7 @@ if __name__ == "__main__":
 
     print(f"Image sequence shape: {image_sequence.shape}")
     print(f"Language embedding shape: {command_embedding.shape}")
+    print(f"Command: {command}")
 
     # Create a figure with subplots: one row per timestamp, one column per camera
     fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
@@ -370,7 +375,7 @@ if __name__ == "__main__":
     # Set title to command
     fig.suptitle(f"Command: {command}")
     plt.tight_layout()
-    example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset_daVinci")
+    example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset")
     if not os.path.exists(example_dataset_plots_folder_path):
         os.makedirs(example_dataset_plots_folder_path)
     file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_skip_frame=}.png")
