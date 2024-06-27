@@ -7,7 +7,7 @@ import random
 
 clip_transform = transforms.Compose(
     [
-        transforms.Resize((224, 224)),
+        # transforms.Resize((224, 224)), already done in dataset (more performant)
         transforms.Normalize(
             (0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)
         ),
@@ -236,11 +236,12 @@ def count_parameters(model):
 # TODO: Make that work
 # Example usage:
 if __name__ == "__main__":
+    import os
     from pathlib import Path
     from instructor.dataset_daVinci import load_merged_data
 
     # Dataset and Dataloader parameters
-    dataset_dir = Path("$PATH_TO_DATASET")
+    dataset_dir = os.getenv("PATH_TO_DATASET")
     num_episodes = 10
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]

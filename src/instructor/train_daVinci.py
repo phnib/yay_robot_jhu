@@ -18,7 +18,6 @@ import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import threading
 import sys
-sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha
 from tqdm import tqdm
 from PIL import Image, ImageDraw, ImageFont
 from sklearn.manifold import TSNE
@@ -26,6 +25,14 @@ from collections import OrderedDict
 
 from instructor.dataset_daVinci import load_merged_data
 from instructor.model_daVinci import Instructor
+
+# import aloha
+path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
+if path_to_yay_robot:
+    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
+else:
+    raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
+from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
 from aloha_pro.aloha_scripts.utils import memory_monitor
 
 
@@ -348,6 +355,8 @@ if __name__ == "__main__":
     ckpt_dir = args.ckpt_dir
     dagger_ratio = args.dagger_ratio
 
+    # TODO: Add here the transformations that should be applied
+
     # TODO: Give the parameter test only to the script - to either load train and val or just test
     # Data loading
     if not args.test_only:
@@ -386,6 +395,7 @@ if __name__ == "__main__":
 
     # WandB initialization
     if args.log_wandb:
+        wandb_entity = os.getenv("WANDB_ENTITY")
         run_name = "instructor." + ckpt_dir.split("/")[-1] + f".{args.seed}"
         wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
         # check if it exists
@@ -393,12 +403,12 @@ if __name__ == "__main__":
             with open(wandb_run_id_path, "r") as f:
                 saved_run_id = f.read().strip()
             wandb.init(
-                project="yay-surgical-robot", entity="$WANDB_ENTITY", name=run_name, resume=saved_run_id
+                project="yay-surgical-robot", entity=wandb_entity, name=run_name, resume=saved_run_id
             )
         else:
             wandb.init(
                 project="yay-surgical-robot",
-                entity="$WANDB_ENTITY",
+                entity=wandb_entity,
                 name=run_name,
                 config=args,
                 resume="allow",

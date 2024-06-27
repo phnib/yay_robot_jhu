@@ -4,7 +4,7 @@ import pkg_resources
 from setuptools import setup, find_packages
 
 
-PKG_NAME = "yay_robot"
+PKG_NAME = "yay_robot_jhu"
 VERSION = "0.1"
 EXTRAS = {}
 

@@ -1,20 +1,27 @@
-import numpy as np
-import torch
 import os
 # import h5py
-import cv2
 import json
 import sys
-sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha 
+
+import cv2
+import numpy as np
+import torch
+from torchvision import transforms
 from torch.utils.data import DataLoader, ConcatDataset
 
+# import aloha
+path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
+if path_to_yay_robot:
+    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
+else:
+    raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
 # from act.utils import DAggerSampler
     
-def generate_command_embeddings(tissue_phase_demo_dict, encoder, tokenizer, model):
+def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
     phase_command_embeddings_dict = {}
-    for phase_folder_name in tissue_phase_demo_dict.keys():
+    for phase_folder_name in unique_phase_folder_names:
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
         _, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
         embedding = encode_text(phase_command, encoder, tokenizer, model)
@@ -42,18 +49,21 @@ def split_tissue_samples(dataset_dir, num_tissue_samples, train_ratio, val_ratio
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        episode_ids,
+        tissue_sample_ids,
         dataset_dir,
         camera_names,
         camera_file_suffixes,
-        history_len=5,
-        prediction_offset=10,
-        history_skip_frame=1,
+        history_len=4,
+        prediction_offset=15,
+        history_skip_frame=30,
         num_episodes=200,
-        random_crop=False, # TODO: Add here more augmentations options
+        framewise_transforms=None,
     ):
         super().__init__()
-        self.episode_ids = episode_ids if len(episode_ids) > 0 else [0]
+        
+        if len(tissue_sample_ids) == 0:
+            raise ValueError("No tissue samples found in the dataset directory.")
+        
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.camera_file_suffixes = camera_file_suffixes
@@ -61,39 +71,41 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.prediction_offset = prediction_offset
         self.history_skip_frame = history_skip_frame
         self.num_episodes = num_episodes
-        self.random_crop = random_crop # TODO: Add here the other augmentations
+        self.framewise_transforms = framewise_transforms
         
-        # Load the tissue samples and their phases and demos (for later stitching of the episodes)
-        tissue_samples = os.listdir(dataset_dir)
+        # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
-        for tissue_sample in tissue_samples:
-            phases = os.listdir(os.path.join(dataset_dir, tissue_sample))
-            self.tissue_phase_demo_dict[tissue_sample] = {}
+        for tissue_sample_id in tissue_sample_ids:
+            tissue_sample_name = f"tissue_{tissue_sample_id}"
+            tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
+            phases = os.listdir(tissue_sample_dir_path)
+            self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases:
-                demo_samples = os.listdir(os.path.join(dataset_dir, tissue_sample, phase_sample))
-                self.tissue_phase_demo_dict[tissue_sample][phase_sample] = demo_samples
+                demo_samples = os.listdir(os.path.join(tissue_sample_dir_path, phase_sample))
+                self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
                 
         # Generate the embeddings for all phase commands
         encoder_name = "distilbert"
         tokenizer, model = initialize_model_and_tokenizer(encoder_name)
-        self.command_embeddings_dict = generate_command_embeddings(self.tissue_phase_demo_dict, encoder_name, tokenizer, model)
+        unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
+        self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, encoder_name, tokenizer, model)
         del tokenizer, model
         
     def __len__(self):
         # Here this means the number of randomly generated stitched episodes
-        return len(self.num_episodes)
+        return self.num_episodes
 
     def get_command_for_ts(self, selected_phase_demo_dict, target_ts):
         # Returns the command embedding and the command for the target timestep
-        for phase_segment in selected_phase_demo_dict:
+        for phase_segment in selected_phase_demo_dict.values():
             if phase_segment["start_timestep"] <= target_ts <= phase_segment["end_timestep"]:
-                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"] # TODO: Check if the squeeze is necessary
+                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"]
         else:
             raise ValueError(f"Could not find command for target_ts {target_ts}.")
 
     def get_current_phase_demo_folder_and_demo_frame_idx(self, selected_phase_demo_dict, target_ts):
         # Returns the phase and the demo frame index for the target timestep
-        for phase_segment in selected_phase_demo_dict:
+        for phase_segment in selected_phase_demo_dict.values():
             if phase_segment["start_timestep"] <= target_ts <= phase_segment["end_timestep"]:
                 return phase_segment["phase_folder_name"], phase_segment["demo_folder_name"], target_ts - phase_segment["start_timestep"]
         else:
@@ -101,12 +113,15 @@ class SequenceDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
-       # TODO: Downsize all to desired size (e.g. 224x224) - already done within the model - but rather put here?
        
         selected_tissue_sample = np.random.choice(list(self.tissue_phase_demo_dict.keys()))
         selected_phase_demo_dict = {}
         episode_num_frames = curr_phase_idx_counter = 0
-        for phase in self.tissue_phase_demo_dict[selected_tissue_sample].keys():
+        
+        # Go through the phases in fixed order of execution
+        phases = list(self.tissue_phase_demo_dict[selected_tissue_sample].keys())
+        sorted_phases = sorted(phases, key=lambda x: int(x.split('_')[0]))
+        for phase in sorted_phases:
             # Select a random demo for each phase
             selected_phase_demo = np.random.choice(self.tissue_phase_demo_dict[selected_tissue_sample][phase])
             
@@ -118,7 +133,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             selected_phase_demo_dict[phase]["command"], selected_phase_demo_dict[phase]["embedding"] = self.command_embeddings_dict[phase]
             
             # Count the number of frames for the current demo
-            demo_num_frames = len(os.listdir(os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)))
+            demo_num_frames = len(os.listdir(os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo, self.camera_names[0])))
             episode_num_frames += demo_num_frames
             
             next_phase_idx_counter = curr_phase_idx_counter + demo_num_frames
@@ -150,20 +165,19 @@ class SequenceDataset(torch.utils.data.Dataset):
             for cam_name, cam_file_suffix in zip(self.camera_names, self.camera_file_suffixes):
                 cam_folder = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, cam_name)
                 frame_path = os.path.join(cam_folder, f"frame{str(ts_demo_frame_idx).zfill(6)}{cam_file_suffix}")
-                image_dict[cam_name] = cv2.imread(frame_path)
-                image_dict[cam_name] = cv2.cvtColor(
-                    image_dict[cam_name], cv2.COLOR_BGR2RGB
-                )
+                img = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
+                img_resized_224 = transforms.Resize((224, 224))(img)
+                image_dict[cam_name] = img_resized_224
+                
             all_cam_images = [
                 image_dict[cam_name] for cam_name in self.camera_names
             ]
-            all_cam_images = np.stack(all_cam_images, axis=0)
-            image_sequence.append(all_cam_images)
+            all_cam_images = torch.stack(all_cam_images, dim=0)
+            all_cam_images_transformed = self.framewise_transforms(all_cam_images) # Apply same transform for all camera images
+            image_sequence.append(all_cam_images_transformed)
 
         # TODO: What about choosing half presision?
-        image_sequence = np.array(image_sequence)
-        image_sequence = torch.tensor(image_sequence, dtype=torch.float32)
-        image_sequence = torch.einsum("t k h w c -> t k c h w", image_sequence)
+        image_sequence = torch.stack(image_sequence, dim=0).to(dtype=torch.float32) # Shape: ts, cam, c, h, w
         image_sequence = image_sequence / 255.0
 
         return image_sequence, command_embedding, command_gt
@@ -180,7 +194,7 @@ def load_merged_data(
     prediction_offset=10,
     history_skip_frame=1,
     test_only=False,
-    random_crop=False, # TODO: Integrate later here the other augmentations
+    framewise_transforms=None,
     dagger_ratio=None, # TODO: Do we need it?
 ):
     print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
@@ -190,7 +204,7 @@ def load_merged_data(
     #     assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
     
     # TODO: Adjust maybe later for debugging with a smaller number of tissues
-    # Obtain train test split
+    # Obtain train/val/test split
     train_ratio = 0.90
     val_ratio = 0.05
     test_ratio = 1 - train_ratio - val_ratio
@@ -210,7 +224,7 @@ def load_merged_data(
         if not test_only:
             # Construct dataset and dataloader for each dataset dir and merge them
             train_datasets.append(SequenceDataset(
-                        [idx for d, idx in train_indices if d == dataset_dir],
+                        [tissue_id for tissue_id in train_indices],
                         dataset_dir,
                         camera_names,
                         camera_file_suffixes,
@@ -218,25 +232,24 @@ def load_merged_data(
                         prediction_offset,
                         history_skip_frame,
                         num_episodes,
-                        random_crop)
+                        framewise_transforms)
             )
             val_datasets.append(SequenceDataset(
-                        [idx for d, idx in val_indices if d == dataset_dir],
+                        [tissue_id for tissue_id in val_indices],
                         dataset_dir,
                         camera_names,
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
                         history_skip_frame,
-                        num_episodes,
-                        random_crop)
+                        num_episodes)
             )
             
             # Merge all datasets (from different tasks) into one big dataset
             merged_train_dataset = ConcatDataset(train_datasets)
             merged_val_dataset = ConcatDataset(val_datasets)
             
-            # TODO: For testing purpose maybe use a small batc size and prefetcch factor
+            # TODO: For testing purpose maybe use a small batch size and prefetch factor
             train_dataloader = DataLoader(
                 merged_train_dataset,
                 batch_size=batch_size_train,
@@ -260,7 +273,7 @@ def load_merged_data(
             
         else: 
             test_datasets.append(SequenceDataset(
-                        [idx for d, idx in test_indices if d == dataset_dir],
+                        [tissue_id for tissue_id in test_indices],
                         dataset_dir,
                         camera_names,
                         camera_file_suffixes,
@@ -268,7 +281,7 @@ def load_merged_data(
                         prediction_offset,
                         history_skip_frame,
                         num_episodes,
-                        random_crop)
+                        framewise_transforms)
             )
             
             # Merge all datasets (from different tasks) into one big dataset
@@ -289,54 +302,79 @@ def load_merged_data(
 # TODO: Add here later the first test for the dataset
 """
 Test the SequenceDataset class.
-
-Example usage:
-$ python src/instructor/dataset.py --dataset_dir /scr/lucyshi/dataset/aloha_bag_3_objects
 """
 if __name__ == "__main__":
-    import argparse
     import matplotlib.pyplot as plt
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dataset_dir", type=str, required=True, help="Path to the dataset directory"
-    )
-    args = parser.parse_args()
+    seed = 42
 
     # Parameters for the test
-    camera_names = ["cam_high", "cam_low"]
-    history_len = 5
-    prediction_offset = 10
-    num_episodes = 10  # Just to sample from the first 10 episodes for testing
+    dataset_dir = os.getenv("PATH_TO_DATASET")
+    tissue_samples_ids = [1]
+    camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
+    camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
+    history_len = 3
+    prediction_offset = 0 # Get command for the current timestep
+    history_skip_frame = 30
+    num_episodes = 200 # Number of randlomy generated stitched episodes
+
+    # Define transforms/augmentations
+    framewise_transforms = []
+    framewise_transforms.append(transforms.Resize((224, 224))) # TODO: Instead of just resize do center crop and resize?
+    framewise_transforms.append(transforms.RandomRotation(30))
+    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    # TODO: Check if these exists - and which to take
+    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomPerspective()], p=0.5))
+    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomPosterize(bits=7)], p=0.25))
+    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomAdjustSharpness(2)], p=0.25))
+    # dataset_transforms.append(transforms.RandomApply([transforms.v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomZoomOut()], p=0.75))
+    # dataset_transforms.append(transforms.RandomApply([transforms.v2.RandomPhotometricDistort()], p=0.8))
+    # dataset_transforms.append(transforms.RandomGrayscale(p=0.2))
+    framewise_transforms = transforms.Compose(framewise_transforms)
 
     # Create a SequenceDataset instance
     dataset = SequenceDataset(
-        list(range(num_episodes)),
-        args.dataset_dir,
+        tissue_samples_ids,
+        dataset_dir,
         camera_names,
+        camera_file_suffixes,
         history_len,
         prediction_offset,
+        history_skip_frame,
+        num_episodes,
+        framewise_transforms
     )
 
     # Sample a random item from the dataset
-    idx = np.random.randint(0, len(dataset))
-    image_sequence, command_embedding, _ = dataset[idx]
+    rdm_idx = np.random.randint(0, len(dataset))
+    image_sequence, command_embedding, command = dataset[rdm_idx]
 
-    print(f"Sampled episode index: {idx}")
     print(f"Image sequence shape: {image_sequence.shape}")
     print(f"Language embedding shape: {command_embedding.shape}")
 
-    # Save the images in the sequence
-    for t in range(history_len):
-        plt.figure(figsize=(10, 5))
+    # Create a figure with subplots: one row per timestamp, one column per camera
+    fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
+    if history_len == 0:
+        axes = axes[np.newaxis, :]
+
+    # Loop over each timestamp and camera to plot the images
+    for t in range(history_len + 1):
         for cam_idx, cam_name in enumerate(camera_names):
-            plt.subplot(1, len(camera_names), cam_idx + 1)
-            # Convert BGR to RGB
-            img_rgb = cv2.cvtColor(
-                image_sequence[t, cam_idx].permute(1, 2, 0).numpy(), cv2.COLOR_BGR2RGB
-            )
-            plt.imshow(img_rgb)
-            plt.title(f"{cam_name} at timestep {t}")
-        plt.tight_layout()
-        plt.savefig(f"plot/image_sequence_timestep_{t}.png")
-        print(f"Saved image_sequence_timestep_{t}.png")
+            ax = axes[t, cam_idx]  # Get the specific subplot axis
+            img = image_sequence[t, cam_idx].permute(1, 2, 0).numpy()
+            ax.imshow(img)
+            ax.set_title(f"{cam_name} at timestep {t}")
+            ax.axis('off')  # Optionally turn off the axis
+
+    # Set title to command
+    fig.suptitle(f"Command: {command}")
+    plt.tight_layout()
+    example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset_daVinci")
+    if not os.path.exists(example_dataset_plots_folder_path):
+        os.makedirs(example_dataset_plots_folder_path)
+    file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_skip_frame=}.png")
+    file_path = os.path.join(example_dataset_plots_folder_path, file_name)
+    plt.savefig(file_path)
+    print(f"Saved {file_name}.")
+    plt.close(fig)  # Close the figure to free memory
