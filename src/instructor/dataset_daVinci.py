@@ -42,6 +42,8 @@ def split_tissue_samples(dataset_dir, num_tissue_samples, train_ratio, val_ratio
     np.random.shuffle(all_indices)
 
     # Split the indices based on the calculated numbers
+    # TODO: Check if the indices are the same for every training (by using the seed) even when training on a different machine - e.g., otherwise introducing bias when resuming training from last checkpoint
+    # TODO: Alternative would be fixed indices for each tissue sample (but randomized assuming that the execution of the surgerymight evolve over newer tissue samples)
     train_indices = [(dataset_dir, idx) for idx in all_indices[:num_train]]
     val_indices = [(dataset_dir, idx) for idx in all_indices[num_train:num_train + num_val]]
     test_indices = [(dataset_dir, idx) for idx in all_indices[num_train + num_val:]]
@@ -214,7 +216,9 @@ def load_merged_data(
     val_ratio = 0.05
     test_ratio = 1 - train_ratio - val_ratio
 
+    # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
+    command_embeddings_dict = {}
     for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
         # Load dataset dir and count number of tissue samples
         dataset_file_names = os.listdir(dataset_dir)
@@ -250,30 +254,20 @@ def load_merged_data(
                         num_episodes)
             )
             
-            # Merge all datasets (from different tasks) into one big dataset
-            merged_train_dataset = ConcatDataset(train_datasets)
-            merged_val_dataset = ConcatDataset(val_datasets)
+            # Get the command embeddings for the train and val datasets
+            train_command_embeddings_dict = train_datasets[-1].command_embeddings_dict
+            val_command_embeddings_dict = val_datasets[-1].command_embeddings_dict
+
+            # Check for same commands in train and val datasets
+            train_commands = set(train_command_embeddings_dict.keys())
+            val_commands = set(val_command_embeddings_dict.keys())
+            if train_commands != val_commands:
+                raise ValueError(f"Commands for validation does not match training commands.")
             
-            train_dataloader = DataLoader(
-                merged_train_dataset,
-                batch_size=batch_size_train,
-                shuffle=True,
-                pin_memory=True,
-                num_workers=8,
-                prefetch_factor=16,
-                persistent_workers=True,
-            )
-            val_dataloader = DataLoader(
-                merged_val_dataset,
-                batch_size=batch_size_val,
-                shuffle=False,
-                pin_memory=True,
-                num_workers=8,
-                prefetch_factor=16,
-                persistent_workers=True,
-            )
+            # TODO: Check whether the embeddings for the same command are the same in train and val datasets
             
-            return train_dataloader, val_dataloader
+            # Update the command embeddings dictionary
+            command_embeddings_dict.update(train_command_embeddings_dict)
             
         else: 
             test_datasets.append(SequenceDataset(
@@ -288,19 +282,51 @@ def load_merged_data(
                         framewise_transforms)
             )
             
-            # Merge all datasets (from different tasks) into one big dataset
-            merged_test_dataset = ConcatDataset(test_datasets) 
+            # Get the command embeddings for the test datasets (should be the same as for train and val datasets)
+            test_command_embeddings_dict = test_datasets[-1].command_embeddings_dict
+            command_embeddings_dict.update(test_command_embeddings_dict)
+            
+    # Construct the dataloaders
+    if not test_only:
+        # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
+        merged_train_dataset = ConcatDataset(train_datasets)
+        merged_val_dataset = ConcatDataset(val_datasets)
+        
+        train_dataloader = DataLoader(
+            merged_train_dataset,
+            batch_size=batch_size_train,
+            shuffle=True,
+            pin_memory=True,
+            num_workers=8,
+            prefetch_factor=16,
+            persistent_workers=True,
+        )
+        val_dataloader = DataLoader(
+            merged_val_dataset,
+            batch_size=batch_size_val,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=8,
+            prefetch_factor=16,
+            persistent_workers=True,
+        )
+        
+        return train_dataloader, val_dataloader, command_embeddings_dict
     
-            test_dataloader = DataLoader(
-                merged_test_dataset,
-                batch_size=1,
-                shuffle=False,
-                pin_memory=True,
-                num_workers=16,
-                prefetch_factor=1,
-            )
+    else:
+        # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
+        merged_test_dataset = ConcatDataset(test_datasets) 
 
-        return test_dataloader
+        test_dataloader = DataLoader(
+            merged_test_dataset,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=16,
+            prefetch_factor=1,
+        )
+        
+        return test_dataloader, command_embeddings_dict
 
 
 """
@@ -328,13 +354,13 @@ if __name__ == "__main__":
     framewise_transforms = []
     framewise_transforms.append(transforms.RandomRotation(30))
     framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    framewise_transforms.append(v2.RandomPerspective(p=0.5))
-    framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
-    framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
-    framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
-    framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
-    framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
+    # framewise_transforms.append(v2.RandomPerspective(p=0.5))
+    # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
     framewise_transforms = transforms.Compose(framewise_transforms)
 
     # Create a SequenceDataset instance
