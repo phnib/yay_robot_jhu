@@ -1,12 +1,17 @@
 """
 Example usage:
 
-# TODO: Give a new example usage command
-python instructor/train.py \
-    --task_name aloha_bag_3_objects aloha_bag_3_objects_d1_v0 aloha_bag_3_objects_d1_v1 aloha_bag_3_objects_d1_v2 \
-    --ckpt_dir /scr/lucyshi/hl_ckpt/aloha_bag_v0_v1_v2_his_2_sf_50_offset_10_lr \
-    --batch_size 16 --num_epochs 1000  --lr 1e-4 \
-    --seed 0 --gpu 1 --test_only 
+python src/instructor/train_daVinci.py \
+    --task_name debugging \
+    --ckpt_dir $YOUR_CKPT_PATH/debugging_ckpt \
+    --batch_size 64 \
+    --num_epochs 15000 \
+    --lr 1e-4 \
+    --history_skip_frame 30 \
+    --prediction_offset 15 \
+    --history_len 3 \
+    --seed 0 \
+    --log_wandb
 """
 import torch
 import torch.optim as optim
@@ -23,17 +28,16 @@ from PIL import Image, ImageDraw, ImageFont
 from sklearn.manifold import TSNE
 from collections import OrderedDict
 
-from instructor.dataset_daVinci import load_merged_data
-from instructor.model_daVinci import Instructor
-
 # import aloha
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 if path_to_yay_robot:
     sys.path.append(os.path.join(path_to_yay_robot, 'src'))
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
-from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
+# from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
 from aloha_pro.aloha_scripts.utils import memory_monitor
+from instructor.dataset_daVinci import load_merged_data
+from instructor.model_daVinci import Instructor
 
 
 def train(model, dataloader, optimizer, criterion, device):
@@ -46,11 +50,11 @@ def train(model, dataloader, optimizer, criterion, device):
         optimizer.zero_grad()
         logits, temperature = model(images)
 
-        # TODO: add here dict of possible replacements
+        
         # Convert ground truth command strings to indices using the pre-computed dictionary
         commands_idx = [
             model.command_to_index[
-                cmd.replace("the back", "the bag").replace("mmove", "move")
+                cmd #.replace("the back", "the bag").replace("mmove", "move")
             ]
             for cmd in commands
         ]
@@ -79,7 +83,9 @@ def evaluate(model, dataloader, criterion, device):
 
             # Convert ground truth command strings to indices using the pre-computed dictionary
             commands_idx = [
-                model.command_to_index[cmd.replace("the back", "the bag")]
+                model.command_to_index[
+                    cmd#.replace("the back", "the bag")
+                    ]
                 for cmd in commands
             ]
             commands_idx = torch.tensor(commands_idx, device=device)
@@ -89,7 +95,6 @@ def evaluate(model, dataloader, criterion, device):
 
             if args.log_wandb:
                 wandb.log({"Eval Loss": loss.item(), "Temperature": temperature.item()})
-                # wandb.log({"Eval Loss": loss.item()})
     return total_loss / len(dataloader)
 
 
@@ -103,7 +108,7 @@ def test(model, dataloader, device, current_epoch):
     # gt_embeddings = []
 
     with torch.no_grad():
-        for idx, batch in enumerate(dataloader): # TODO: Does this also work when the batch size is not 1?
+        for idx, batch in enumerate(dataloader):
             images, command_embedding_gt, command_gt = batch
             images = images.to(device)
 
@@ -239,11 +244,11 @@ def tsne_visualize(predicted_embeddings, gt_embeddings, candidate_embeddings, ep
                 "t-SNE Visualization": [
                     wandb.Image(image_save_path, caption=f"Epoch {epoch}")
                 ]
-            }
+            },
         )
 
 
-# TODO: Still needed or reading this out on the run from the datasets?
+# Note: Currently not needed as reading it from the datasets directly
 def load_candidate_texts(file_path):
     with open(file_path, "r") as f:
         lines = f.readlines()
@@ -251,10 +256,8 @@ def load_candidate_texts(file_path):
         candidate_texts = [line.split(":")[0].strip().strip("'\"") for line in lines]
     return candidate_texts
 
-
-# TODO: Still needed or reading this out on the run from the datasets?
+# Note: Currently not needed as reading it from the datasets directly
 def load_candidate_texts_and_embeddings(dataset_dirs, device=torch.device("cuda")):
-    # TODO: Get these from the dataset
     
     candidate_texts = []
     candidate_embeddings = []
@@ -294,15 +297,12 @@ def load_candidate_texts_and_embeddings(dataset_dirs, device=torch.device("cuda"
     return candidate_texts, candidate_embeddings
 
 
-def build_instructor(dataset_dirs, history_len, device):
-    # Load candidate texts and embeddings
-    # TODO: Probably rather get the text and embeddings from the datasets - change the function?
-    candidate_texts, candidate_embeddings = load_candidate_texts_and_embeddings(
-        dataset_dirs, device=device
-    )
+def build_instructor(history_len, candidate_embeddings, candidate_texts, device):
+    # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
     # Build model
+    candidate_embeddings = candidate_embeddings.to(device)
     model = Instructor(
         device=device,
         history_len=history_len,
@@ -315,7 +315,7 @@ def build_instructor(dataset_dirs, history_len, device):
 
 if __name__ == "__main__":
     from instructor.utils import set_seed
-    from aloha_pro.aloha_scripts.constants import TASK_CONFIGS # get task parameters
+    from aloha_pro.aloha_scripts.constants_daVinci import TASK_CONFIGS # get task parameters
     
     threading.Thread(target=memory_monitor, daemon=True).start()
 
@@ -355,17 +355,16 @@ if __name__ == "__main__":
     ckpt_dir = args.ckpt_dir
     dagger_ratio = args.dagger_ratio # TODO: Still needed?
 
-    # TODO: Add here the transformations that should be applied
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
     framewise_transforms = []
     framewise_transforms.append(transforms.RandomRotation(30))
     framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
     # framewise_transforms.append(v2.RandomPerspective(p=0.5))
     # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
     # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
     # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
     framewise_transforms = transforms.Compose(framewise_transforms)
@@ -399,10 +398,10 @@ if __name__ == "__main__":
             history_skip_frame=args.history_skip_frame,
             test_only=args.test_only,
             framewise_transforms=framewise_transforms,
-            test_only=True,
+            dagger_ratio=dagger_ratio,
         )
 
-    model = build_instructor(dataset_dirs, args.history_len, device)
+    model = build_instructor(args.history_len, candidate_embeddings, candidate_texts, device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr) # TODO: Add here later also further parameters like weight decay, ..
     criterion = torch.nn.CrossEntropyLoss()
 

@@ -63,6 +63,7 @@ def extract_candidate_embeddings_and_commands(command_embeddings_dict):
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
+        split_name,
         tissue_sample_ids,
         dataset_dir,
         camera_names,
@@ -78,6 +79,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         if len(tissue_sample_ids) == 0:
             raise ValueError("No tissue samples found in the dataset directory.")
         
+        self.split_name = split_name
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.camera_file_suffixes = camera_file_suffixes
@@ -189,8 +191,11 @@ class SequenceDataset(torch.utils.data.Dataset):
                 image_dict[cam_name] for cam_name in self.camera_names
             ]
             all_cam_images = torch.stack(all_cam_images, dim=0)
-            all_cam_images_transformed = self.framewise_transforms(all_cam_images) # Apply same transform for all camera images
-            image_sequence.append(all_cam_images_transformed)
+            if self.split_name == "train" and self.framewise_transforms is not None:
+                all_cam_images_transformed = self.framewise_transforms(all_cam_images) # Apply same transform for all camera images
+                image_sequence.append(all_cam_images_transformed)
+            else:
+                image_sequence.append(all_cam_images)
 
         # TODO: What about choosing half presision?
         image_sequence = torch.stack(image_sequence, dim=0).to(dtype=torch.float32) # Shape: ts, cam, c, h, w
@@ -218,7 +223,6 @@ def load_merged_data(
     # if dagger_ratio is not None: # TODO: do we need it?
     #     assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
     
-    # TODO: Make it running with my debugging dataset
     # TODO: Later reset again to reasonable splits
     # Obtain train/val/test split
     train_ratio = 1/3 # 0.90
@@ -242,6 +246,7 @@ def load_merged_data(
         if not test_only:
             # Construct dataset and dataloader for each dataset dir and merge them
             train_datasets.append(SequenceDataset(
+                        "train",
                         [tissue_id for tissue_id in train_indices],
                         dataset_dir,
                         camera_names,
@@ -253,6 +258,7 @@ def load_merged_data(
                         framewise_transforms)
             )
             val_datasets.append(SequenceDataset(
+                        "val",
                         [tissue_id for tissue_id in val_indices],
                         dataset_dir,
                         camera_names,
@@ -260,7 +266,8 @@ def load_merged_data(
                         history_len,
                         prediction_offset,
                         history_skip_frame,
-                        num_episodes)
+                        num_episodes,
+                        framewise_transforms)
             )
             
             # Get the command embeddings for the train and val datasets
@@ -278,6 +285,7 @@ def load_merged_data(
             
         else: 
             test_datasets.append(SequenceDataset(
+                        "test",
                         [tissue_id for tissue_id in test_indices],
                         dataset_dir,
                         camera_names,
@@ -299,6 +307,7 @@ def load_merged_data(
         merged_train_dataset = ConcatDataset(train_datasets)
         merged_val_dataset = ConcatDataset(val_datasets)
         
+        # TODO: Adjust later the number of workers/pre-fetch factor (original: 8 / 16)
         train_dataloader = DataLoader(
             merged_train_dataset,
             batch_size=batch_size_train,
@@ -353,7 +362,7 @@ if __name__ == "__main__":
     set_seed(seed)
 
     # Parameters for the test
-    dataset_dir = os.getenv("PATH_TO_DATASET")
+    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
     tissue_samples_ids = [1]
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
@@ -378,6 +387,7 @@ if __name__ == "__main__":
 
     # Create a SequenceDataset instance
     dataset = SequenceDataset(
+        "train",
         tissue_samples_ids,
         dataset_dir,
         camera_names,

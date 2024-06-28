@@ -1,2 +1,4 @@
 yay_robot_jhu.egg-info
 *.pyc
+wandb
+model_ckpts

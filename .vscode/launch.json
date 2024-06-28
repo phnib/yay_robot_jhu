@@ -1,0 +1,35 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Debug YAY HL Training",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${env:PATH_TO_YAY_ROBOT}/src/instructor/train_daVinci.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "debugging",
+                "--ckpt_dir", "/home/phansen/JHU-Projects/yay_robot_jhu/model_ckpts/hl/debugging_ckpt",// TODO: Add this later like this: "${env:YOUR_CKPT_PATH}/hl/debugging_ckpt",
+                "--batch_size", "8",
+                "--num_epochs", "100",
+                "--lr", "1e-4",
+                "--history_skip_frame", "30",
+                "--prediction_offset", "15",
+                "--history_len", "3",
+                "--seed", "0",
+                "--log_wandb"
+            ]
+        }
+    ]
+}

@@ -245,8 +245,6 @@ if __name__ == "__main__":
     from instructor.dataset_daVinci import load_merged_data
     from instructor.utils import set_seed
 
-    # TODO: Check gpu usage
-
     seed = 42
     set_seed(seed)    
 
@@ -282,7 +280,7 @@ if __name__ == "__main__":
     batch_size_val = 2
 
     # Load the dataloader
-    train_dataloader, _, (candidate_embeddings, candidate_texts) = load_merged_data(
+    train_dataloader, val_dataloader, (candidate_embeddings, candidate_texts) = load_merged_data(
         dataset_dirs=datasets_dir,
         num_episodes_list=num_episodes_list,
         camera_names=camera_names,
@@ -306,46 +304,45 @@ if __name__ == "__main__":
     )
     model.to(device)
 
-    # Fetch a batch of data and pass it through the model
-    idx_in_batch = 0
-    for image_sequence, command_embedding, gt_command in train_dataloader:
-        image_sequence = image_sequence.to(device)
-        predictions_logits, temperature = model(image_sequence)
-        pred_command = model.decode_logits(predictions_logits, temperature)
-        
-        print(f"Image sequence shape: {image_sequence.shape}")
-        print(f"Language data shape: {command_embedding.shape}")
-        print(f"Predictions shape: {predictions_logits.shape}")
-        print("---------")
-        print(f"Ground truth command ({prediction_offset=}): {gt_command[idx_in_batch]}")
-        print(f"Predicted command [untrained] ({prediction_offset=}): {pred_command[idx_in_batch]}")
-        break
+    for split_name, dataloader in [("train", train_dataloader), ("val", val_dataloader)]:
+        # Fetch a batch of data and pass it through the model
+        idx_in_batch = 0
+        for image_sequence, command_embedding, gt_command in dataloader:
+            image_sequence = image_sequence.to(device)
+            predictions_logits, temperature = model(image_sequence)
+            pred_command = model.decode_logits(predictions_logits, temperature)
+            
+            print(f"\nSplit: {split_name}")
+            print(f"Image sequence shape: {image_sequence.shape}")
+            print(f"Language data shape: {command_embedding.shape}")
+            print(f"Predictions shape: {predictions_logits.shape}")
+            print(f"Ground truth command ({prediction_offset=}): {gt_command[idx_in_batch]}")
+            print(f"Predicted command [untrained] ({prediction_offset=}): {pred_command[idx_in_batch]}\n")
+            
+            break
 
-    # Create a figure with subplots: one row per timestamp, one column per camera
-    fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
-    if history_len == 0:
-        axes = axes[np.newaxis, :]
+        # Create a figure with subplots: one row per timestamp, one column per camera
+        fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
+        if history_len == 0:
+            axes = axes[np.newaxis, :]
 
-    # Loop over each timestamp and camera to plot the images
-    for t in range(history_len + 1):
-        for cam_idx, cam_name in enumerate(camera_names):
-            ax = axes[t, cam_idx]  # Get the specific subplot axis
-            img = image_sequence[0, t, cam_idx].permute(1, 2, 0).detach().cpu().numpy()
-            ax.imshow(img)
-            ax.set_title(f"{cam_name} at timestep {t}")
-            ax.axis('off')  # Optionally turn off the axis
+        # Loop over each timestamp and camera to plot the images
+        for t in range(history_len + 1):
+            for cam_idx, cam_name in enumerate(camera_names):
+                ax = axes[t, cam_idx]  # Get the specific subplot axis
+                img = image_sequence[0, t, cam_idx].permute(1, 2, 0).detach().cpu().numpy()
+                ax.imshow(img)
+                ax.set_title(f"{cam_name} at timestep {t}")
+                ax.axis('off')  # Optionally turn off the axis
 
-    # Set title to command
-    fig.suptitle(f"Gt Command: {gt_command[idx_in_batch]} - Prediction [untrained]: {pred_command[idx_in_batch]}")
-    plt.tight_layout()
-    example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "untrained_model_pred")
-    if not os.path.exists(example_dataset_plots_folder_path):
-        os.makedirs(example_dataset_plots_folder_path)
-    file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{history_len=}_{history_skip_frame=}.png")
-    file_path = os.path.join(example_dataset_plots_folder_path, file_name)
-    plt.savefig(file_path)
-    print(f"Saved {file_name}.")
-    import time
-    start_time = time.time()
-    plt.close(fig)  # Close the figure to free memory
-    print(f"Time taken to save and close the figure: {time.time() - start_time:.2f}s")
+        # Set title to command
+        fig.suptitle(f"Gt Command: {gt_command[idx_in_batch]} - Prediction [untrained]: {pred_command[idx_in_batch]}")
+        plt.tight_layout()
+        example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "untrained_model_pred")
+        if not os.path.exists(example_dataset_plots_folder_path):
+            os.makedirs(example_dataset_plots_folder_path)
+        file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{split_name=}{history_len=}_{history_skip_frame=}.png")
+        file_path = os.path.join(example_dataset_plots_folder_path, file_name)
+        plt.savefig(file_path)
+        print(f"Saved {file_name}\n---------")
+        plt.close(fig)  # Close the figure to free memory
