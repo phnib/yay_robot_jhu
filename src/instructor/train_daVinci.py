@@ -358,9 +358,9 @@ if __name__ == "__main__":
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
     framewise_transforms = []
-    framewise_transforms.append(transforms.RandomRotation(30))
-    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    # framewise_transforms.append(transforms.RandomRotation(30))
+    # framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
     # framewise_transforms.append(v2.RandomPerspective(p=0.5))
     # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
@@ -370,7 +370,6 @@ if __name__ == "__main__":
     framewise_transforms = transforms.Compose(framewise_transforms)
 
     # Data loading
-    # TODO: For testing purpose maybe use a small batch size and prefetch factor
     if not args.test_only:
         train_dataloader, val_dataloader, (candidate_embeddings, candidate_texts) = load_merged_data(
             dataset_dirs=dataset_dirs,
@@ -468,9 +467,9 @@ if __name__ == "__main__":
         pbar_epochs.set_postfix({"Train Loss": train_loss})
 
         if args.log_wandb:
-            wandb.log({"Epoch Train Loss": train_loss}, step=epoch)
+            wandb.log({"Epoch Train Loss": train_loss})#, step=epoch)
             if dagger_ratio is None:
-                wandb.log({"Epoch Eval Loss": eval_loss}, step=epoch)
+                wandb.log({"Epoch Eval Loss": eval_loss})#, step=epoch)
 
         # Save a checkpoint every 100 epochs
         save_ckpt_every = 100
