@@ -25,9 +25,6 @@ clip_transform = transforms.Compose(
     ]
 )
 
-ONE_HOT = False  # ablation
-
-
 class Instructor(nn.Module):
     def __init__(
         self,
@@ -41,8 +38,10 @@ class Instructor(nn.Module):
         candidate_texts=None,
         command_to_index=None,
         num_cameras=4,
+        one_hot_flag=False,
     ):
         super().__init__()
+        self.one_hot_flag = one_hot_flag
 
         # Load the pretrained CLIP model
         self.clip_model, self.clip_text_model = load("ViT-B/32", device=device)
@@ -60,7 +59,7 @@ class Instructor(nn.Module):
             num_layers=num_layers,
         )
 
-        if ONE_HOT:
+        if one_hot_flag:
             output_size = len(candidate_texts)
 
         self.mlp = nn.Sequential(
@@ -128,18 +127,19 @@ class Instructor(nn.Module):
         # Extract the final output of the Transformer for each sequence in the batch
         final_output = transformer_out[:, -1, :]
 
-        if ONE_HOT:
+        if self.one_hot_flag:
             # Directly predict the logits for each command
             logits = self.mlp(final_output)
+            command_emb_pred = final_output # From transformer model
         else:
             # Predict the command embedding
-            command_pred = self.mlp(final_output)
+            command_emb_pred = self.mlp(final_output)
             # Compute the similarity scores as logits
-            logits = self.compute_similarities(command_pred) / self.temperature.clamp(
+            logits = self.compute_similarities(command_emb_pred) / self.temperature.clamp(
                 min=1e-8
             )
 
-        return logits, self.temperature
+        return logits, self.temperature, command_emb_pred
 
     def compute_similarities(self, embeddings):
         # Compute the cosine similarities
@@ -168,7 +168,7 @@ class Instructor(nn.Module):
         # Compute the probabilities
         probs = (
             logits
-            if ONE_HOT
+            if self.one_hot_flag
             else torch.nn.functional.softmax(logits / temperature, dim=-1)
         )
 
@@ -309,7 +309,7 @@ if __name__ == "__main__":
         idx_in_batch = 0
         for image_sequence, command_embedding, gt_command in dataloader:
             image_sequence = image_sequence.to(device)
-            predictions_logits, temperature = model(image_sequence)
+            predictions_logits, temperature, _ = model(image_sequence)
             pred_command = model.decode_logits(predictions_logits, temperature)
             
             print(f"\nSplit: {split_name}")
