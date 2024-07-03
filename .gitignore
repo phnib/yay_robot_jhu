@@ -4,3 +4,5 @@ wandb
 model_ckpts
 
 examples_plots
+
+*/.vscode

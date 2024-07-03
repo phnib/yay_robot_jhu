@@ -13,21 +13,24 @@ python src/instructor/train_daVinci.py \
     --seed 0 \
     --log_wandb
 """
+
+import os
+import argparse
+import threading
+import sys
+
 import torch
 import torch.optim as optim
-import argparse
-import os
 import numpy as np
 import wandb
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-import threading
-import sys
 from tqdm import tqdm
 from PIL import Image, ImageDraw, ImageFont
 from sklearn.manifold import TSNE
-from collections import OrderedDict
-from sklearn.metrics import balanced_accuracy_score, confusion_matrix
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+from sklearn.metrics import f1_score
 
 # import aloha
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
@@ -73,7 +76,6 @@ def train(model, dataloader, optimizer, criterion, device):
 
 
 def evaluate(model, dataloader, criterion, device):
-    # TODO: Add here the eval directly - instead of running it at the end (for better performance?)
     
     model.eval()
     total_loss = 0.0
@@ -101,17 +103,17 @@ def evaluate(model, dataloader, criterion, device):
         
     return total_loss / len(dataloader)
 
-# TODO: Check if it works? What about the uncommented parts
-def test(model, dataloader, device, current_epoch, one_hot_flag, max_num_images = 5):
+
+def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, max_num_images = 5):
 
     model.eval()
 
+    # Initialize variables for the confusion matrix + tsne plots
     total_correct = 0
     total_predictions = 0
 
-    predicted_embeddings = []
-    gt_embeddings = []
-
+    all_predicted_embeddings = []
+    all_gt_embeddings = []
     all_commands_gt = []
     all_decoded_texts = []
 
@@ -128,8 +130,8 @@ def test(model, dataloader, device, current_epoch, one_hot_flag, max_num_images 
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
 
-            predicted_embeddings.extend(predicted_embedding.cpu().numpy())
-            gt_embeddings.extend(command_embedding_gt.cpu().numpy())
+            all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
+            all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
             incorrect_img_cnt = correct_img_cnt = 0
             for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):                
@@ -137,41 +139,42 @@ def test(model, dataloader, device, current_epoch, one_hot_flag, max_num_images 
                 if pred != gt and incorrect_img_cnt < max_num_images:
                     incorrect_img_cnt += 1
                     save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
-                    save_combined_image(images[img_idx], gt, pred, save_path)
+                    log_combined_image(images[img_idx], gt, pred, save_path)
                     if args.log_wandb:
                         wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
                 # Save correct prediction
                 if pred == gt and correct_img_cnt < max_num_images:
                     save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
-                    save_combined_image(images[img_idx], gt, pred, save_path)
+                    log_combined_image(images[img_idx], gt, pred, save_path)
+                    if args.log_wandb:
+                        wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
 
                 total_correct += int(pred == gt)
                 total_predictions += 1
-                # print(f"Ground truth: {gt} \t Predicted text: {pred}")
                 
-
-
-    # TODO: Add the visualization of the embeddings again - or just add it too WandB
     # Visualize embeddings
-    # TODO: Get candidate embeddings, texts as parameter?
     if not one_hot_flag:
         # Plot the t-SNE visualization of the embeddings of the last batch
-        tsne_visualize(predicted_embeddings, gt_embeddings, candidate_embeddings, current_epoch)
+        log_tsne_plot(candidate_embeddings, candidate_texts, all_predicted_embeddings, all_decoded_texts, all_gt_embeddings, current_epoch)
 
-    # TODO: Add here a confusion matrix - check if it works
-    log_confusion_matrix(all_commands_gt, all_decoded_texts, "val", candidate_texts, current_epoch) # TODO: Get right split name
+    # Create confusion matrix
+    log_confusion_matrix(all_commands_gt, all_decoded_texts, split_name, candidate_texts, current_epoch)
 
-    # TODO: Add here also further metrics - accuracy, precision, recall, f1, ... (confusion matrix)
-    success_rate = total_correct / total_predictions
-    print(f"Epoch {current_epoch}: Success Rate = {success_rate * 100:.2f}%")
-
+    # Compute the success rate -> accurarcy
+    accurarcy_curr_epoch = total_correct / total_predictions
     if args.log_wandb:
-        wandb.log({"Success Rate": success_rate})
+        wandb.log({"Accurarcy": accurarcy_curr_epoch})
+        
+    # Compute the (macro) F1 score
+    f1_score_curr_epoch = f1_score(all_commands_gt, all_decoded_texts, average='macro')
+    if args.log_wandb:
+        wandb.log({"F1 Score": f1_score_curr_epoch})
+        
+    print(f"\nEpoch {current_epoch}: Accuracy = {accurarcy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
 
-    return success_rate
+# ----------------------------
 
-
-def save_combined_image(image, gt_text, pred_text, save_path=None):
+def log_combined_image(image, gt_text, pred_text, save_path=None):
     # image = image[:, :, [2, 1, 0]]
 
     num_ts = image.shape[0]
@@ -183,7 +186,7 @@ def save_combined_image(image, gt_text, pred_text, save_path=None):
             if t == 0:
                 combined_image_all = combined_image
             else:
-                combined_image_all = torch.cat([combined_image_all, combined_image], dim=-2) # TODO: Correct dimension?
+                combined_image_all = torch.cat([combined_image_all, combined_image], dim=-2)
         combined_image = combined_image_all
     else:
         # Extract last frame and concatenate across width
@@ -208,8 +211,6 @@ def save_combined_image(image, gt_text, pred_text, save_path=None):
 
     if save_path is not None:
         canvas.save(save_path)
-    else:
-        return canvas
 
 
 def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None):
@@ -259,7 +260,7 @@ def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None):
     # TODO: Maybe need to shorten the names for the plots
     # Log the confusion matrix with WandB
     if epoch is not None:
-        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch+1}")
+        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch+1})")
         wandb.log({f"{split_name=}_confusion_matrix": fig})
         plt.close()
     else:
@@ -267,52 +268,56 @@ def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None):
         wandb.log({f"{split_name=}_confusion_matrix": fig})
         plt.close()
 
-# TODO: Check out if this works
-def tsne_visualize(predicted_embeddings, gt_embeddings, candidate_embeddings, epoch):
-    # TODO: Should I add candidate texts as labels
-    # TODO: Shouldn't there be for each candidate embedding be one point and then only for the current vision embedding (and text signalizing the class)
+
+# TODO: Double check if it works corrrectly - close points in high-dimensional space should be close in the 2D space
+def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings, predicted_commands, gt_embeddings, epoch):
     
     # Convert lists to numpy arrays
-    predicted_embeddings = np.array(predicted_embeddings)
+    candidate_embeddings = np.array(candidate_embeddings)
     gt_embeddings = np.array(gt_embeddings)
+    predicted_embeddings = np.array(predicted_embeddings)
 
-    assert (
-        predicted_embeddings.shape == gt_embeddings.shape
-    ), "The number of predicted and ground truth embeddings do not match."
+    # Check that all predicted commands are within the candidate commands
+    all_unique_commands_set = set(candidate_commands)
+    all_unique_predicted_commands_set = set(predicted_commands)
+    if not all_unique_predicted_commands_set.issubset(all_unique_commands_set):
+        print(f"Commands that are not in the candidate commands: {all_unique_predicted_commands_set - all_unique_commands_set}")
+        raise ValueError("All predicted commands should be within the candidate commands")
+
+    # Generate a color palette
+    base_colors = sns.color_palette("husl", len(candidate_commands))
+    color_map = {command: color for command, color in zip(candidate_commands, base_colors)}
 
     # Stack embeddings and apply t-SNE
-    all_embeddings = np.vstack(
-        [predicted_embeddings, gt_embeddings, candidate_embeddings.cpu().numpy()]
-    )
+    all_embeddings = np.vstack([predicted_embeddings, gt_embeddings, candidate_embeddings])
     tsne = TSNE(n_components=2, random_state=42)
     embeddings_2d = tsne.fit_transform(all_embeddings)
 
-    # Split the 2D embeddings back
+    # Split the 2D embeddings back (not interested in the gt_embeddings, only for stability of the t-SNE)
     predicted_2d = embeddings_2d[: len(predicted_embeddings)]
-    gt_2d = embeddings_2d[
-        len(predicted_embeddings) : len(predicted_embeddings) + len(gt_embeddings)
-    ]
-    candidate_2d = embeddings_2d[len(predicted_embeddings) + len(gt_embeddings) :]
+    candidate_2d = embeddings_2d[len(predicted_embeddings):]
 
     # Plot the results
-    plt.figure(figsize=(10, 10))
-    plt.scatter(
-        candidate_2d[:, 0], candidate_2d[:, 1], marker="o", color="g", label="Dataset"
-    )
-    plt.scatter(gt_2d[:, 0], gt_2d[:, 1], marker="o", color="b", label="Ground Truth")
-    plt.scatter(
-        predicted_2d[:, 0], predicted_2d[:, 1], marker="o", color="r", label="Predicted"
-    )
+    plt.figure(figsize=(12, 10))
+
+    # Plot candidate embeddings
+    for i, command in enumerate(candidate_commands):
+        plt.scatter(candidate_2d[i, 0], candidate_2d[i, 1], color=color_map[command], alpha= 1, label=f"{command}" if command not in candidate_commands[:i] else "")
+
+    # Plot predicted embeddings
+    for i, command in enumerate(predicted_commands):
+        plt.scatter(predicted_2d[i, 0], predicted_2d[i, 1], color=color_map[command], alpha=0.5)
 
     plt.xlabel("t-SNE Dimension 1")
     plt.ylabel("t-SNE Dimension 2")
     plt.title(f"t-SNE Visualization of Embeddings (Epoch {epoch})")
-    plt.legend()
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys())
 
     # Save with the epoch in the filename
     tnse_plots_folder_path = os.path.join(ckpt_dir, "tsne_plots")
-    if not os.path.exists(tnse_plots_folder_path):
-        os.makedirs(tnse_plots_folder_path)
+    os.makedirs(tnse_plots_folder_path, exist_ok=True)
     image_save_path = os.path.join(tnse_plots_folder_path, f"embeddings_tsne_epoch_{epoch}.png")
     plt.savefig(image_save_path)
 
@@ -328,55 +333,7 @@ def tsne_visualize(predicted_embeddings, gt_embeddings, candidate_embeddings, ep
         
     plt.close()
 
-
-# Note: Currently not needed as reading it from the datasets directly
-def load_candidate_texts(file_path):
-    with open(file_path, "r") as f:
-        lines = f.readlines()
-        # Extract the instruction (text before the colon), strip whitespace, and then strip quotation marks
-        candidate_texts = [line.split(":")[0].strip().strip("'\"") for line in lines]
-    return candidate_texts
-
-# Note: Currently not needed as reading it from the datasets directly
-def load_candidate_texts_and_embeddings(dataset_dirs, device=torch.device("cuda")):
-    
-    candidate_texts = []
-    candidate_embeddings = []
-
-    for dataset_dir in dataset_dirs:
-        embeddings_path = os.path.join(
-            dataset_dir, "candidate_embeddings_distilbert.npy"
-        )
-        # Load pre-computed embeddings
-        candidate_embedding = (
-            torch.tensor(np.load(embeddings_path).astype(np.float32))
-            .to(device)
-            .squeeze()
-        )
-        candidate_embeddings.append(candidate_embedding)
-        candidate_texts_path = os.path.join(dataset_dir, "count.txt")
-        current_candidate_texts = load_candidate_texts(candidate_texts_path)
-        candidate_texts.extend(current_candidate_texts)
-    candidate_embeddings = torch.cat(candidate_embeddings, dim=0).to(device)
-
-    def remove_duplicates(candidate_texts, candidate_embeddings):
-        unique_entries = OrderedDict()
-
-        for text, embedding in zip(candidate_texts, candidate_embeddings):
-            if text not in unique_entries:
-                unique_entries[text] = embedding
-
-        # Rebuild the lists without duplicates
-        filtered_texts = list(unique_entries.keys())
-        filtered_embeddings = torch.stack(list(unique_entries.values()))
-
-        return filtered_texts, filtered_embeddings
-
-    candidate_texts, candidate_embeddings = remove_duplicates(
-        candidate_texts, candidate_embeddings
-    )
-    return candidate_texts, candidate_embeddings
-
+# -----------------------------
 
 def build_instructor(history_len, candidate_embeddings, candidate_texts, device, one_hot_flag=False):
     # Map command texts to indices
@@ -434,8 +391,9 @@ if __name__ == "__main__":
     parser.add_argument('--history_skip_frame', action='store', type=int, help='history_skip_frame', default=30)
     parser.add_argument('--test_only', action='store_true', help='Test the model using the latest checkpoint and exit')
     parser.add_argument('--one_hot_flag', action='store_true', help='Use one hot encoding for the commands')
-    parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None) # TODO: Still needed?
-    # TODO: Maybe add later a list of transformations/augmentations that should be applied as arg
+    parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None)
+    parser.add_argument('--validation_interval', action='store', type=int, help='validation_interval', default=5)
+    # TODO: Maybe add later a list of transformations/augmentations that should be applied as args
 
     args = parser.parse_args()
 
@@ -455,7 +413,7 @@ if __name__ == "__main__":
         camera_names = task_config["camera_names"]
         camera_file_suffixes = task_config["camera_file_suffixes"]
     ckpt_dir = args.ckpt_dir
-    dagger_ratio = args.dagger_ratio # TODO: Still needed?
+    dagger_ratio = args.dagger_ratio # TODO: Integrate later
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
@@ -502,7 +460,7 @@ if __name__ == "__main__":
             dagger_ratio=dagger_ratio,
         )
 
-    one_hot_flag = True # args.one_hot_flag # TODO: Add later via arg
+    one_hot_flag = True # args.one_hot_flag # TODO: Add later via arg -> remove this and take directly from args
     model = build_instructor(args.history_len, candidate_embeddings, candidate_texts, device, one_hot_flag)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr) # TODO: Add here later also further parameters like weight decay, ..
     criterion = torch.nn.CrossEntropyLoss()
@@ -553,28 +511,28 @@ if __name__ == "__main__":
 
     # Test the model using the latest checkpoint - don't train
     if args.test_only:
-        test(model, test_dataloader, device, latest_idx, one_hot_flag)
+        test(model, test_dataloader, "test", device, latest_idx, one_hot_flag)
         exit()
 
     # Training loop
     pbar_epochs = tqdm(range(latest_idx, args.num_epochs), desc="Epochs")
     for epoch in pbar_epochs:
-        wandb.log({"Epoch": epoch}) # TODO: Add later maybe also others
+        wandb.log({"Epoch": epoch}) # TODO: Add later maybe also other hyperparameters
         
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
-        if dagger_ratio is None: # TODO: Do we still need the dagger_ratio?
-            eval_loss = evaluate(model, val_dataloader, criterion, device)
+        if dagger_ratio is None: # TODO: Integrate back later
+            val_loss = evaluate(model, val_dataloader, criterion, device)
             
             # Test the model and log success rate every 200 epochs
-            if epoch % 1 == 0 and (epoch > 0 or dagger_ratio is not None):
-                test(model, val_dataloader, device, epoch, one_hot_flag)
+            if epoch % args.validation_interval == 0 and (epoch > 0 or dagger_ratio is not None):
+                test(model, val_dataloader, "val", device, epoch, one_hot_flag)
 
-        pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": eval_loss if dagger_ratio is None else None})
+        pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if dagger_ratio is None else None})
 
         if args.log_wandb:
-            wandb.log({"Epoch Train Loss": train_loss})#, step=epoch)
+            wandb.log({"Epoch Train Loss": train_loss})
             if dagger_ratio is None:
-                wandb.log({"Epoch Eval Loss": eval_loss})#, step=epoch)
+                wandb.log({"Epoch Eval Loss": val_loss})
 
         # Save a checkpoint every 100 epochs
         save_ckpt_every = 100
