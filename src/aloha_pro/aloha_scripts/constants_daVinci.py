@@ -6,14 +6,14 @@ TASK_CONFIGS = {
     "chole_clipping_cutting": {
         "dataset_dir": os.path.join(DATA_DIR, "base_chole_clipping_cutting"),
         "num_episodes": 200, # TODO: Adjust here the number of generated episode of the chole recordings
-        "camera_names": ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"],
-        "camera_file_suffixes": ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
+        "camera_names": ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"],
+        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"],
     },
     "debugging": { # TODO: Remove later again
         "dataset_dir": os.path.join(DATA_DIR, "debugging"),
         "num_episodes": 200,
-        "camera_names": ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"],
-        "camera_file_suffixes": ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
+        "camera_names": ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"],
+        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"],
     },
     # TODO: Later add here the fine-tuning datasets
 }

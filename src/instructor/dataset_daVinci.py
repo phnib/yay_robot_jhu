@@ -3,6 +3,7 @@ import os
 import json
 import sys
 
+import yaml
 import cv2
 import numpy as np
 import torch
@@ -89,14 +90,22 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.num_episodes = num_episodes
         self.framewise_transforms = framewise_transforms
         
+        # Set the before_phase_offset and after_phase_offset
+        config_file_path = os.path.join(path_to_yay_robot, "config", "config.yaml")
+        with open(config_file_path, 'r') as config_file:
+            config_dict = yaml.safe_load(config_file)
+            self.before_phase_offset = config_dict["data"]["before_phase_offset"]
+            self.after_phase_offset = config_dict["data"]["after_phase_offset"]
+ 
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
         for tissue_sample_id in tissue_sample_ids:
             tissue_sample_name = f"tissue_{tissue_sample_id}"
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = os.listdir(tissue_sample_dir_path)
+            phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
-            for phase_sample in phases:
+            for phase_sample in phases_ordered:
                 demo_samples = os.listdir(os.path.join(tissue_sample_dir_path, phase_sample))
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
                 
@@ -123,7 +132,8 @@ class SequenceDataset(torch.utils.data.Dataset):
         # Returns the phase and the demo frame index for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
             if phase_segment["start_timestep"] <= target_ts <= phase_segment["end_timestep"]:
-                return phase_segment["phase_folder_name"], phase_segment["demo_folder_name"], target_ts - phase_segment["start_timestep"]
+                demo_frame_idx = target_ts - phase_segment["start_timestep"] + phase_segment["start"] # TODO: Check if this works
+                return phase_segment["phase_folder_name"], phase_segment["demo_folder_name"], demo_frame_idx
         else:
             raise ValueError(f"Could not find phase and demo frame index for target_ts {target_ts}.")
 
@@ -148,22 +158,42 @@ class SequenceDataset(torch.utils.data.Dataset):
             selected_phase_demo_dict[phase]["start_timestep"] = curr_phase_idx_counter
             selected_phase_demo_dict[phase]["command"], selected_phase_demo_dict[phase]["embedding"] = self.command_embeddings_dict[phase]
             
-            # Count the number of frames for the current demo
-            demo_num_frames = len(os.listdir(os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo, self.camera_names[0])))
-            episode_num_frames += demo_num_frames
+            # Load the start and end indices for the current demo as the valid range of the demo
+            selected_date_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
+            demo_num_frames_total = len(os.listdir(os.path.join(selected_date_folder_path, self.camera_names[0])))
+            start, end = 0, demo_num_frames_total - 1
+            # Check for "indices_curated.json" file (for more accurate start and end indices)
+            indices_curated_file_path = os.path.join(selected_date_folder_path, "indices_curated.json")
+            if os.path.exists(indices_curated_file_path):
+                with open(indices_curated_file_path, 'r') as indices_curated_file:
+                    try:
+                        indices_curated_dict = json.load(indices_curated_file)
+                    except json.JSONDecodeError:
+                        print(f"Error reading indices_curated.json for {selected_date_folder_path}. Continue with max recording range.")
+
+                    # Get start and end indices from the json file
+                    if "start" in indices_curated_dict:
+                        start = max(indices_curated_dict['start'] - self.before_phase_offset, start)
+                    if "end" in indices_curated_dict:
+                        end = min(indices_curated_dict['end'] + self.after_phase_offset, end)
+            selected_phase_demo_dict[phase]["start"] = start
+            selected_phase_demo_dict[phase]["end"] = end 
             
-            next_phase_idx_counter = curr_phase_idx_counter + demo_num_frames
+            # Count the number of valid frames for the current demo
+            demo_num_frames_valid = end - start + 1
+            episode_num_frames += demo_num_frames_valid
+            
+            next_phase_idx_counter = curr_phase_idx_counter + demo_num_frames_valid
             selected_phase_demo_dict[phase]["end_timestep"] = next_phase_idx_counter - 1 # -1 because the end_timestep is inclusive
             curr_phase_idx_counter = next_phase_idx_counter
         
         # Sample a random curr_ts and compute the start_ts and target_ts
-        prediction_offset = self.prediction_offset
         curr_ts = np.random.randint(
             self.history_len * self.history_skip_frame,
-            episode_num_frames - prediction_offset,
+            episode_num_frames - self.prediction_offset,
         )
         start_ts = curr_ts - self.history_len * self.history_skip_frame
-        target_ts = curr_ts + prediction_offset
+        target_ts = curr_ts + self.prediction_offset
         
         # Retrieve the language embedding for the target_ts
         command_embedding, command_gt = self.get_command_for_ts(
@@ -216,17 +246,17 @@ def load_merged_data(
     history_skip_frame=1,
     test_only=False,
     framewise_transforms=None,
-    dagger_ratio=None, # TODO: Do we need it?
+    dagger_ratio=None, # TODO: Integrate later
 ):
     print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
 
-    # if dagger_ratio is not None: # TODO: do we need it?
+    # if dagger_ratio is not None:
     #     assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
     
     # TODO: Later reset again to reasonable splits
     # Obtain train/val/test split
-    train_ratio = 1/3 # 0.90
-    val_ratio = 1/3 # 0.05
+    train_ratio = 1/2 # 0.90
+    val_ratio = 1/2 # 0.05
     test_ratio = 1 - train_ratio - val_ratio
 
     # Construct the datasets and the dataset embeddings
@@ -242,6 +272,9 @@ def load_merged_data(
         train_indices, val_indices, test_indices = split_tissue_samples(
             dataset_dir, num_tissue_samples, train_ratio, val_ratio, test_ratio
         )
+        
+        # TODO: Add later the DAggerSampler back
+        # TODO: Add later distributed sampler for multi GPU training
         
         if not test_only:
             # Construct dataset and dataloader for each dataset dir and merge them
@@ -307,7 +340,6 @@ def load_merged_data(
         merged_train_dataset = ConcatDataset(train_datasets)
         merged_val_dataset = ConcatDataset(val_datasets)
         
-        # TODO: Adjust later the number of workers/pre-fetch factor (original: 8 / 16)
         train_dataloader = DataLoader(
             merged_train_dataset,
             batch_size=batch_size_train,
@@ -358,17 +390,17 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from instructor.utils import set_seed
 
-    seed = 42
+    seed = 0
     set_seed(seed)
 
     # Parameters for the test
-    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
+    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting") # "base_chole_clipping_cutting" | "debugging"
     tissue_samples_ids = [1]
-    camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
-    camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
+    camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
+    camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
     prediction_offset = 0 # Get command for the current timestep
-    history_skip_frame = 30
+    history_skip_frame = 1
     num_episodes = 200 # Number of randlomy generated stitched episodes
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
