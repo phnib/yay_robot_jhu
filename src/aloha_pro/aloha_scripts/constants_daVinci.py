@@ -3,7 +3,7 @@ import os
 ### Task parameters
 DATA_DIR = os.getenv("PATH_TO_DATASET")
 TASK_CONFIGS = {
-    "chole_clipping_cutting": {
+    "base_chole_clipping_cutting": {
         "dataset_dir": os.path.join(DATA_DIR, "base_chole_clipping_cutting"),
         "num_episodes": 200, # TODO: Adjust here the number of generated episode of the chole recordings
         "camera_names": ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"],

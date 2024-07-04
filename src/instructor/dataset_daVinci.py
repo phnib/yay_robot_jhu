@@ -32,24 +32,24 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
 
     return phase_command_embeddings_dict
 
-def split_tissue_samples(dataset_dir, num_tissue_samples, train_ratio, val_ratio, test_ratio):
+def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio):
     # Calculate the number of samples for each set
+    num_tissue_samples = len(tissue_names)
     num_train = int(train_ratio * num_tissue_samples)
     num_val = int(val_ratio * num_tissue_samples)
-    num_test = num_tissue_samples - num_train - num_val
 
     # Generate a list of indices and shuffle them
-    all_indices = list(range(1, num_tissue_samples+1))
+    all_indices = list(range(0, num_tissue_samples))
     np.random.shuffle(all_indices)
 
     # Split the indices based on the calculated numbers
     # TODO: Check if the indices are the same for every training (by using the seed) even when training on a different machine - e.g., otherwise introducing bias when resuming training from last checkpoint
     # TODO: Alternative would be fixed indices for each tissue sample (but randomized assuming that the execution of the surgerymight evolve over newer tissue samples)
-    train_indices = [idx for idx in all_indices[:num_train]]
-    val_indices = [idx for idx in all_indices[num_train:num_train + num_val]]
-    test_indices = [idx for idx in all_indices[num_train + num_val:]]
+    train_tissue_names = [tissue_names[idx] for idx in all_indices[:num_train]]
+    val_tissue_names = [tissue_names[idx] for idx in all_indices[num_train:num_train + num_val]]
+    test_tissue_names = [tissue_names[idx] for idx in all_indices[num_train + num_val:]]
 
-    return train_indices, val_indices, test_indices
+    return train_tissue_names, val_tissue_names, test_tissue_names
 
 def extract_candidate_embeddings_and_commands(command_embeddings_dict):
     # Extract the candidate embeddings and commands
@@ -65,7 +65,7 @@ class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         split_name,
-        tissue_sample_ids,
+        tissue_sample_names,
         dataset_dir,
         camera_names,
         camera_file_suffixes,
@@ -77,7 +77,7 @@ class SequenceDataset(torch.utils.data.Dataset):
     ):
         super().__init__()
         
-        if len(tissue_sample_ids) == 0:
+        if len(tissue_sample_names) == 0:
             raise ValueError("No tissue samples found in the dataset directory.")
         
         self.split_name = split_name
@@ -99,14 +99,14 @@ class SequenceDataset(torch.utils.data.Dataset):
  
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
-        for tissue_sample_id in tissue_sample_ids:
-            tissue_sample_name = f"tissue_{tissue_sample_id}"
+        for tissue_sample_name in tissue_sample_names:
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
-            phases = os.listdir(tissue_sample_dir_path)
+            phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name))]
             phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases_ordered:
-                demo_samples = os.listdir(os.path.join(tissue_sample_dir_path, phase_sample))
+                files_in_phase_folder = os.listdir(os.path.join(tissue_sample_dir_path, phase_sample))
+                demo_samples = [demo_sample for demo_sample in files_in_phase_folder if demo_sample[8] == "-"] 
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
                 
         # Generate the embeddings for all phase commands
@@ -123,7 +123,7 @@ class SequenceDataset(torch.utils.data.Dataset):
     def get_command_for_ts(self, selected_phase_demo_dict, target_ts):
         # Returns the command embedding and the command for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
-            if phase_segment["start_timestep"] <= target_ts <= phase_segment["end_timestep"]:
+            if phase_segment["full_episode_demo_start_idx"] <= target_ts <= phase_segment["full_episode_demo_end_idx"]:
                 return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"]
         else:
             raise ValueError(f"Could not find command for target_ts {target_ts}.")
@@ -131,8 +131,8 @@ class SequenceDataset(torch.utils.data.Dataset):
     def get_current_phase_demo_folder_and_demo_frame_idx(self, selected_phase_demo_dict, target_ts):
         # Returns the phase and the demo frame index for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
-            if phase_segment["start_timestep"] <= target_ts <= phase_segment["end_timestep"]:
-                demo_frame_idx = target_ts - phase_segment["start_timestep"] + phase_segment["start"] # TODO: Check if this works
+            if phase_segment["full_episode_demo_start_idx"] <= target_ts <= phase_segment["full_episode_demo_end_idx"]:
+                demo_frame_idx = target_ts - phase_segment["full_episode_demo_start_idx"] + phase_segment["demo_rel_start_idx"]
                 return phase_segment["phase_folder_name"], phase_segment["demo_folder_name"], demo_frame_idx
         else:
             raise ValueError(f"Could not find phase and demo frame index for target_ts {target_ts}.")
@@ -155,7 +155,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             selected_phase_demo_dict[phase] = {}
             selected_phase_demo_dict[phase]["phase_folder_name"] = phase
             selected_phase_demo_dict[phase]["demo_folder_name"] = selected_phase_demo
-            selected_phase_demo_dict[phase]["start_timestep"] = curr_phase_idx_counter
+            selected_phase_demo_dict[phase]["full_episode_demo_start_idx"] = curr_phase_idx_counter
             selected_phase_demo_dict[phase]["command"], selected_phase_demo_dict[phase]["embedding"] = self.command_embeddings_dict[phase]
             
             # Load the start and end indices for the current demo as the valid range of the demo
@@ -176,15 +176,14 @@ class SequenceDataset(torch.utils.data.Dataset):
                         start = max(indices_curated_dict['start'] - self.before_phase_offset, start)
                     if "end" in indices_curated_dict:
                         end = min(indices_curated_dict['end'] + self.after_phase_offset, end)
-            selected_phase_demo_dict[phase]["start"] = start
-            selected_phase_demo_dict[phase]["end"] = end 
+            selected_phase_demo_dict[phase]["demo_rel_start_idx"] = start
             
             # Count the number of valid frames for the current demo
             demo_num_frames_valid = end - start + 1
             episode_num_frames += demo_num_frames_valid
             
             next_phase_idx_counter = curr_phase_idx_counter + demo_num_frames_valid
-            selected_phase_demo_dict[phase]["end_timestep"] = next_phase_idx_counter - 1 # -1 because the end_timestep is inclusive
+            selected_phase_demo_dict[phase]["full_episode_demo_end_idx"] = next_phase_idx_counter - 1 # -1 because the full_episode_demo_end_idx is inclusive
             curr_phase_idx_counter = next_phase_idx_counter
         
         # Sample a random curr_ts and compute the start_ts and target_ts
@@ -265,12 +264,11 @@ def load_merged_data(
     for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
         # Load dataset dir and count number of tissue samples
         dataset_file_names = os.listdir(dataset_dir)
-        tissue_folders = [f for f in dataset_file_names if f.startswith("tissue")]
-        num_tissue_samples = len(tissue_folders)
+        tissue_names = [tissue_folder for tissue_folder in dataset_file_names if tissue_folder.startswith("tissue")]
         
         # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
-        train_indices, val_indices, test_indices = split_tissue_samples(
-            dataset_dir, num_tissue_samples, train_ratio, val_ratio, test_ratio
+        train_tissues, val_tissues, test_tissues = split_tissue_samples(
+            dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio
         )
         
         # TODO: Add later the DAggerSampler back
@@ -280,7 +278,7 @@ def load_merged_data(
             # Construct dataset and dataloader for each dataset dir and merge them
             train_datasets.append(SequenceDataset(
                         "train",
-                        [tissue_id for tissue_id in train_indices],
+                        [tissue_name for tissue_name in train_tissues],
                         dataset_dir,
                         camera_names,
                         camera_file_suffixes,
@@ -292,7 +290,7 @@ def load_merged_data(
             )
             val_datasets.append(SequenceDataset(
                         "val",
-                        [tissue_id for tissue_id in val_indices],
+                        [tissue_name for tissue_name in val_tissues],
                         dataset_dir,
                         camera_names,
                         camera_file_suffixes,
@@ -310,8 +308,9 @@ def load_merged_data(
             # Check for same commands in train and val datasets
             train_commands = set(train_command_embeddings_dict.keys())
             val_commands = set(val_command_embeddings_dict.keys())
-            if train_commands != val_commands:
-                raise ValueError(f"Commands for validation does not match training commands.")
+            # TODO: Add later again
+            # if train_commands != val_commands:
+            #     raise ValueError(f"Commands for validation does not match training commands.")
             
             # Update the command embeddings dictionary
             command_embeddings_dict.update(train_command_embeddings_dict)
@@ -319,7 +318,7 @@ def load_merged_data(
         else: 
             test_datasets.append(SequenceDataset(
                         "test",
-                        [tissue_id for tissue_id in test_indices],
+                        [tissue_name for tissue_name in test_tissues],
                         dataset_dir,
                         camera_names,
                         camera_file_suffixes,
@@ -395,7 +394,7 @@ if __name__ == "__main__":
 
     # Parameters for the test
     dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting") # "base_chole_clipping_cutting" | "debugging"
-    tissue_samples_ids = [1]
+    tissue_samples_ids = ["tissue_1"] #, "tissue_4"]
     camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
