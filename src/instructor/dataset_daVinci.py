@@ -19,6 +19,7 @@ else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
 from instructor.utils import center_crop_resize
+from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get task parameters
 # from act.utils import DAggerSampler
     
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
@@ -34,6 +35,9 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
 
 def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio):
     # Calculate the number of samples for each set
+    if dataset_dir == "base_chole_clipping_cutting":
+        tissue_names.remove("tissue_1") # Remove tissue_1 from the dataset as not complete
+            
     num_tissue_samples = len(tissue_names)
     num_train = int(train_ratio * num_tissue_samples)
     num_val = int(val_ratio * num_tissue_samples)
@@ -254,8 +258,8 @@ def load_merged_data(
     
     # TODO: Later reset again to reasonable splits
     # Obtain train/val/test split
-    train_ratio = 1/2 # 0.90
-    val_ratio = 1/2 # 0.05
+    train_ratio = 2/3 # 0.90
+    val_ratio = 1/3 # 0.05
     test_ratio = 1 - train_ratio - val_ratio
 
     # Construct the datasets and the dataset embeddings
@@ -264,12 +268,20 @@ def load_merged_data(
     for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
         # Load dataset dir and count number of tissue samples
         dataset_file_names = os.listdir(dataset_dir)
-        tissue_names = [tissue_folder for tissue_folder in dataset_file_names if tissue_folder.startswith("tissue")]
+        dataset_name = os.path.basename(dataset_dir)
+        dataset_config = DATASET_CONFIGS[dataset_name]
+        incomplete_tissue_samples = dataset_config["incomplete_tissue_samples"] if "incomplete_tissue_samples" in dataset_config else []
+        tissue_names = [tissue_name for tissue_name in dataset_file_names if tissue_name.startswith("tissue") and tissue_name not in incomplete_tissue_samples]
         
         # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
         train_tissues, val_tissues, test_tissues = split_tissue_samples(
             dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio
         )
+        # TODO: Add to dataset_metadata_dict and output it in the dataloader?
+        print(f"\nDataset: {dataset_dir}")
+        print(f"Train tissues: {train_tissues}")
+        print(f"Val tissues: {val_tissues}")
+        print(f"Test tissues: {test_tissues}")
         
         # TODO: Add later the DAggerSampler back
         # TODO: Add later distributed sampler for multi GPU training
@@ -308,9 +320,8 @@ def load_merged_data(
             # Check for same commands in train and val datasets
             train_commands = set(train_command_embeddings_dict.keys())
             val_commands = set(val_command_embeddings_dict.keys())
-            # TODO: Add later again
-            # if train_commands != val_commands:
-            #     raise ValueError(f"Commands for validation does not match training commands.")
+            if train_commands != val_commands:
+                raise ValueError(f"Commands for validation does not match training commands.")
             
             # Update the command embeddings dictionary
             command_embeddings_dict.update(train_command_embeddings_dict)

@@ -32,7 +32,7 @@ from sklearn.metrics import confusion_matrix
 import seaborn as sns
 from sklearn.metrics import f1_score
 
-# import aloha
+# import aloha # TODO: Rather do this via absolute imports
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 if path_to_yay_robot:
     sys.path.append(os.path.join(path_to_yay_robot, 'src'))
@@ -56,12 +56,7 @@ def train(model, dataloader, optimizer, criterion, device):
         logits, temperature, _ = model(images)
 
         # Convert ground truth command strings to indices using the pre-computed dictionary
-        commands_idx = [
-            model.command_to_index[
-                cmd #.replace("the back", "the bag").replace("mmove", "move")
-            ]
-            for cmd in commands
-        ]
+        commands_idx = [model.command_to_index[cmd] for cmd in commands] 
         commands_idx = torch.tensor(commands_idx, device=device)
 
         loss = criterion(logits, commands_idx)
@@ -87,12 +82,7 @@ def evaluate(model, dataloader, criterion, device):
             logits, temperature, _ = model(images)
 
             # Convert ground truth command strings to indices using the pre-computed dictionary
-            commands_idx = [
-                model.command_to_index[
-                    cmd#.replace("the back", "the bag")
-                    ]
-                for cmd in commands
-            ]
+            commands_idx = [model.command_to_index[cmd] for cmd in commands]
             commands_idx = torch.tensor(commands_idx, device=device)
 
             loss = criterion(logits, commands_idx)
@@ -231,16 +221,16 @@ def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None):
         """
         
         # Create a new fig
-        fig = plt.figure()
+        fig = plt.figure(figsize=(8, 8))
         
         if normalize:
             cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
         plt.imshow(cm, interpolation='nearest', cmap=cmap)
         plt.title(title)
-        plt.colorbar()
+        plt.colorbar(shrink=0.7)
         tick_marks = np.arange(len(classes))
-        plt.xticks(tick_marks, classes, rotation=45)
+        plt.xticks(tick_marks, classes, rotation=90)
         plt.yticks(tick_marks, classes)
 
         fmt = '.2f' if normalize else 'd'
@@ -260,7 +250,7 @@ def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None):
     # TODO: Maybe need to shorten the names for the plots
     # Log the confusion matrix with WandB
     if epoch is not None:
-        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch+1})")
+        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch})")
         wandb.log({f"{split_name=}_confusion_matrix": fig})
         plt.close()
     else:
@@ -373,7 +363,7 @@ def latest_checkpoint(ckpt_dir):
 
 if __name__ == "__main__":
     from instructor.utils import set_seed
-    from aloha_pro.aloha_scripts.constants_daVinci import TASK_CONFIGS # get task parameters
+    from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get task parameters
     
     threading.Thread(target=memory_monitor, daemon=True).start()
 
@@ -392,7 +382,7 @@ if __name__ == "__main__":
     parser.add_argument('--test_only', action='store_true', help='Test the model using the latest checkpoint and exit')
     parser.add_argument('--one_hot_flag', action='store_true', help='Use one hot encoding for the commands')
     parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None)
-    parser.add_argument('--validation_interval', action='store', type=int, help='validation_interval', default=5)
+    parser.add_argument('--validation_interval', action='store', type=int, help='validation_interval', default=3)
     # TODO: Maybe add later a list of transformations/augmentations that should be applied as args
 
     args = parser.parse_args()
@@ -407,13 +397,40 @@ if __name__ == "__main__":
     num_episodes_list = []
 
     for task in args.task_name:
-        task_config = TASK_CONFIGS[task]
+        task_config = DATASET_CONFIGS[task]
         dataset_dirs.append(task_config["dataset_dir"])
         num_episodes_list.append(task_config["num_episodes"])
         camera_names = task_config["camera_names"]
         camera_file_suffixes = task_config["camera_file_suffixes"]
     ckpt_dir = args.ckpt_dir
     dagger_ratio = args.dagger_ratio # TODO: Integrate later
+
+    # WandB initialization
+    if args.log_wandb:
+        wandb_entity = os.getenv("WANDB_ENTITY")
+        run_name = "instructor." + ckpt_dir.split("/")[-1] + f".{args.seed}"
+        wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
+        # check if it exists
+        if os.path.exists(wandb_run_id_path) and False: # TODO: Add later again - ignore for now bc of the warnings
+            with open(wandb_run_id_path, "r") as f:
+                saved_run_id = f.read().strip()
+            wandb.init(
+                project="yay-surgical-robot", entity=wandb_entity, name=run_name, resume=saved_run_id
+            )
+        else:
+            wandb.init(
+                project="yay-surgical-robot",
+                entity=wandb_entity,
+                name=run_name,
+                config=args,
+                resume="allow",
+            )
+            # Ensure the directory exists before trying to open the file
+            os.makedirs(os.path.dirname(wandb_run_id_path), exist_ok=True)
+            with open(wandb_run_id_path, "w") as f:
+                f.write(wandb.run.id)
+
+    # ---------------------- Define dataloaders and model ----------------------
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
@@ -465,31 +482,6 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=args.lr) # TODO: Add here later also further parameters like weight decay, ..
     criterion = torch.nn.CrossEntropyLoss()
 
-    # WandB initialization
-    if args.log_wandb:
-        wandb_entity = os.getenv("WANDB_ENTITY")
-        run_name = "instructor." + ckpt_dir.split("/")[-1] + f".{args.seed}"
-        wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
-        # check if it exists
-        if os.path.exists(wandb_run_id_path) and False: # TODO: Add later again - ignore for now bc of the warnings
-            with open(wandb_run_id_path, "r") as f:
-                saved_run_id = f.read().strip()
-            wandb.init(
-                project="yay-surgical-robot", entity=wandb_entity, name=run_name, resume=saved_run_id
-            )
-        else:
-            wandb.init(
-                project="yay-surgical-robot",
-                entity=wandb_entity,
-                name=run_name,
-                config=args,
-                resume="allow",
-            )
-            # Ensure the directory exists before trying to open the file
-            os.makedirs(os.path.dirname(wandb_run_id_path), exist_ok=True)
-            with open(wandb_run_id_path, "w") as f:
-                f.write(wandb.run.id)
-
     # Load the most recent checkpoint if available
     if not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
@@ -503,6 +495,8 @@ if __name__ == "__main__":
         else:
             print("No checkpoint found.")
             latest_idx = 0
+
+    # ---------------------- Training loop ----------------------
 
     # Create a directory to save predictions for the current run
     predictions_dir = os.path.join(ckpt_dir, "predictions")
