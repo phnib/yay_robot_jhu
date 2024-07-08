@@ -243,7 +243,7 @@ if __name__ == "__main__":
     from torchvision.transforms import v2
     
     from instructor.dataset_daVinci import load_merged_data
-    from instructor.utils import set_seed
+    from act.utils import set_seed
 
     seed = 42
     set_seed(seed)    

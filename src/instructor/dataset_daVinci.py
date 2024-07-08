@@ -20,7 +20,7 @@ else:
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
 from instructor.utils import center_crop_resize
 from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get task parameters
-# from act.utils import DAggerSampler
+from instructor.utils import DAggerSampler
     
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
@@ -249,12 +249,12 @@ def load_merged_data(
     history_skip_frame=1,
     test_only=False,
     framewise_transforms=None,
-    dagger_ratio=None, # TODO: Integrate later
+    dagger_ratio=None,
 ):
     print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
 
-    # if dagger_ratio is not None:
-    #     assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
+    if dagger_ratio is not None:
+        assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
     
     # TODO: Later reset again to reasonable splits
     # Obtain train/val/test split
@@ -273,20 +273,39 @@ def load_merged_data(
         incomplete_tissue_samples = dataset_config["incomplete_tissue_samples"] if "incomplete_tissue_samples" in dataset_config else []
         tissue_names = [tissue_name for tissue_name in dataset_file_names if tissue_name.startswith("tissue") and tissue_name not in incomplete_tissue_samples]
         
-        # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
-        train_tissues, val_tissues, test_tissues = split_tissue_samples(
-            dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio
-        )
-        # TODO: Add to dataset_metadata_dict and output it in the dataloader?
-        print(f"\nDataset: {dataset_dir}")
-        print(f"Train tissues: {train_tissues}")
-        print(f"Val tissues: {val_tissues}")
-        print(f"Test tissues: {test_tissues}")
+        if dagger_ratio is not None:
+            # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
+            train_tissues, val_tissues, test_tissues = split_tissue_samples(
+                dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio
+            )
+            # TODO: Add to dataset_metadata_dict and output it in the dataloader?
+            print(f"\nDataset: {dataset_dir}")
+            print(f"Train tissues: {train_tissues}")
+            print(f"Val tissues: {val_tissues}")
+            print(f"Test tissues: {test_tissues}")
         
-        # TODO: Add later the DAggerSampler back
         # TODO: Add later distributed sampler for multi GPU training
         
-        if not test_only:
+        if dagger_ratio is not None and not test_only:
+            raise NotImplementedError("DAgger not yet implemented.")
+            
+            train_datasets.append(SequenceDataset(
+                        "train",
+                        tissue_names,
+                        dataset_dir,
+                        camera_names,
+                        camera_file_suffixes,
+                        history_len,
+                        prediction_offset,
+                        history_skip_frame,
+                        num_episodes,
+                        framewise_transforms)
+            )
+            
+            train_command_embeddings_dict = train_datasets[-1].command_embeddings_dict
+            command_embeddings_dict.update(train_command_embeddings_dict)
+            
+        elif not test_only:
             # Construct dataset and dataloader for each dataset dir and merge them
             train_datasets.append(SequenceDataset(
                         "train",
@@ -345,7 +364,41 @@ def load_merged_data(
             command_embeddings_dict.update(test_command_embeddings_dict)
             
     # Construct the dataloaders
-    if not test_only:
+    if dagger_ratio is not None and not test_only:
+        # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
+        merged_train_dataset = ConcatDataset(train_datasets)
+
+        # TODO: Adjust DAgger code in utils.py depending on how we save the corrections data later (corrections data -> last_dataset_tissue_indices) 
+            
+        # dataset_sizes = {
+        #     dataset_dir: num_episodes
+        #     for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list)
+        # }
+
+        # dagger_sampler = DAggerSampler(
+        #     all_episode_indices,
+        #     last_dataset_indices,
+        #     batch_size_train,
+        #     dagger_ratio,
+        #     dataset_sizes,
+        # )
+        
+        # train_dataloader = DataLoader(
+        #     merged_train_dataset,
+        #     batch_size=batch_size_train,
+        #     shuffle=True,
+        #     pin_memory=True,
+        #     num_workers=8,
+        #     prefetch_factor=16,
+        #     persistent_workers=True,
+        # )
+        
+        # Extract the candidate embeddings and commands
+        candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        
+        return train_dataloader, (candidate_embeddings, candidate_texts)
+    
+    elif not test_only:
         # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
         merged_train_dataset = ConcatDataset(train_datasets)
         merged_val_dataset = ConcatDataset(val_datasets)
@@ -398,7 +451,7 @@ Test the SequenceDataset class.
 """
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from instructor.utils import set_seed
+    from act.utils import set_seed
 
     seed = 0
     set_seed(seed)

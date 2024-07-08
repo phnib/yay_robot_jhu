@@ -362,7 +362,7 @@ def latest_checkpoint(ckpt_dir):
 
 
 if __name__ == "__main__":
-    from instructor.utils import set_seed
+    from act.utils import set_seed
     from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get task parameters
     
     threading.Thread(target=memory_monitor, daemon=True).start()
@@ -403,7 +403,7 @@ if __name__ == "__main__":
         camera_names = task_config["camera_names"]
         camera_file_suffixes = task_config["camera_file_suffixes"]
     ckpt_dir = args.ckpt_dir
-    dagger_ratio = args.dagger_ratio # TODO: Integrate later
+    dagger_ratio = args.dagger_ratio 
 
     # WandB initialization
     if args.log_wandb:
@@ -514,7 +514,7 @@ if __name__ == "__main__":
         wandb.log({"Epoch": epoch}) # TODO: Add later maybe also other hyperparameters
         
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
-        if dagger_ratio is None: # TODO: Integrate back later
+        if dagger_ratio is None: 
             val_loss = evaluate(model, val_dataloader, criterion, device)
             
             # Test the model and log success rate every 200 epochs
