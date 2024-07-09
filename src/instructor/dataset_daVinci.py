@@ -489,7 +489,7 @@ Test the SequenceDataset class.
 """
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from act.utils import set_seed
+    from instructor.utils import set_seed
 
     seed = 0
     set_seed(seed)

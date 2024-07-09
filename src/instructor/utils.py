@@ -15,6 +15,16 @@ def center_crop_resize(img, size):
     img_transformed = transform(img)
     return img_transformed
 
+# TODO: For now use this function (later maybe take it directly again from act.utils.py)
+def set_seed(seed):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.backends.cudnn.enabled:
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
 # ----------------
 
 # TODO: Apply this on the dataset containing all the tissues of our correction recording with the previous trained policy
