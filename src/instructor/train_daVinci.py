@@ -194,9 +194,7 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
 
     # Add GT and predicted text
     draw = ImageDraw.Draw(canvas)
-    font = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 30
-    )
+    font = ImageFont.load_default(size=38)
     draw.text((10, 10), "GT: " + gt_text, font=font, fill="white")
     draw.text((10, 50), "Pred: " + pred_text, font=font, fill="red")
 
