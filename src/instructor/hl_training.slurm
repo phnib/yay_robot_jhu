@@ -1,27 +1,46 @@
 #!/bin/bash
-SBATCH --job-name=hl_training        # Job name
-# TODO: Later put the output, error files somewhere else + possible to add timestamp?!
-#SBATCH --output=hl_training_output.txt           # Standard output file
-#SBATCH --error=hl_training_error.txt             # Standard error file
-#SBATCH --partition="express"    # Partition or queue name # TODO: Use later "a100"
+#SBATCH --job-name=hl_training        # Job name
+#SBATCH --output=slurm_jobs_output/job_%j/hl_training_output.txt   # Standard output file in job_{job_id} folder
+#SBATCH --error=slurm_jobs_output/job_%j/hl_training_error.txt     # Standard error file in job_{job_id} folder
+#SBATCH --partition="a100"    # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=1           # Number of tasks per node
-#SBATCH --cpus-per-task=1             # Number of CPU cores per task # TODO: How to request gpu nodes
-#SBATCH --time=0:02:00                # Maximum runtime (D-HH:MM:SS) # TODO: Adjust the time
+#SBATCH --cpus-per-task=8             # Number of CPU cores per task
+#SBATCH --time=0:01:00                # Maximum runtime (D-HH:MM:SS) # TODO: Adjust the time
 #SBATCH --mail-type=END               # Send email at job completion
 #SBATCH --mail-user=phanse14@jh.edu    # Email address for notifications
 #SBATCH -A akriege1_gpu                 # PI-userid_gpu
 #SBATCH --gres=gpu:1                  # Number of GPUs
 
+# Unload all currently loaded modules to start with a clean environment
+module purge 
+
 #Load necessary modules (if needed)
-module load conda
-# module load cuda/11.3 # TODO: Do I need to load CUDA or is this done manually?
+module load anaconda
+module load namd/2.14-cuda-smp # TODO: Does this line has an effect?
 
 # Activate the virtual environment
 conda activate /home/phanse14/.conda/envs/yay
 
+# Set environment variables
+export PATH_TO_YAY_ROBOT="/home/phanse14/scr4_akriege1/chole/yay_robot_jhu"
+export PATH_TO_DATASET="/home/phanse14/scr4_akriege1/chole/chole_dataset"
+export YOUR_CKPT_PATH="$PATH_TO_YAY_ROBOT/model_ckpts"
+export WANDB_ENTITY="pascal-hansen" # TODO: Adjust to WandB cloud entity
+
 #Your job commands go here
-python train_daVinci.py # TODO: Does it work with relative paths? Will it directly work with CUDA?!
+python train_daVinci.py \
+    --task_name debugging \
+    --ckpt_dir $YOUR_CKPT_PATH/hl/run_ckpt \
+    --batch_size 128 \
+    --num_epochs 1000 \
+    --lr 1e-4 \
+    --history_skip_frame 1 \
+    --prediction_offset 0 \
+    --history_len 0 \
+    --seed 0 \
+    --one_hot_flag \
+    --validation_interval 1
 
 #Optionally, you can include cleanup commands here (e.g., after the job finishes) 
 #For example:
