@@ -280,7 +280,7 @@ if __name__ == "__main__":
     batch_size_val = 2
 
     # Load the dataloader
-    train_dataloader, val_dataloader, (candidate_embeddings, candidate_texts) = load_merged_data(
+    train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
         dataset_dirs=datasets_dir,
         num_episodes_list=num_episodes_list,
         camera_names=camera_names,
@@ -292,6 +292,8 @@ if __name__ == "__main__":
         batch_size_val=batch_size_val,
         framewise_transforms=framewise_transforms,
     )    
+    candidate_embeddings = ds_metadata_dict["command_embeddings"]
+    candidate_texts = ds_metadata_dict["command_texts"]
     
     # Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

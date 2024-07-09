@@ -25,7 +25,12 @@ from instructor.utils import DAggerSampler
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
     phase_command_embeddings_dict = {}
-    for phase_folder_name in unique_phase_folder_names:
+    # TODO: Check if this works for the post training
+    try: 
+        unique_phase_folder_names_sorted = sorted(unique_phase_folder_names, key=lambda x: int(x.split('_')[0]))
+    except:
+        unique_phase_folder_names_sorted = unique_phase_folder_names
+    for phase_folder_name in unique_phase_folder_names_sorted:
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
         _, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
         embedding = encode_text(phase_command, encoder, tokenizer, model)
@@ -47,8 +52,6 @@ def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test
     np.random.shuffle(all_indices)
 
     # Split the indices based on the calculated numbers
-    # TODO: Check if the indices are the same for every training (by using the seed) even when training on a different machine - e.g., otherwise introducing bias when resuming training from last checkpoint
-    # TODO: Alternative would be fixed indices for each tissue sample (but randomized assuming that the execution of the surgerymight evolve over newer tissue samples)
     train_tissue_names = [tissue_names[idx] for idx in all_indices[:num_train]]
     val_tissue_names = [tissue_names[idx] for idx in all_indices[num_train:num_train + num_val]]
     test_tissue_names = [tissue_names[idx] for idx in all_indices[num_train + num_val:]]
@@ -230,7 +233,6 @@ class SequenceDataset(torch.utils.data.Dataset):
             else:
                 image_sequence.append(all_cam_images)
 
-        # TODO: What about choosing half presision?
         image_sequence = torch.stack(image_sequence, dim=0).to(dtype=torch.float32) # Shape: ts, cam, c, h, w
         image_sequence = image_sequence / 255.0
 
@@ -251,16 +253,40 @@ def load_merged_data(
     framewise_transforms=None,
     dagger_ratio=None,
 ):
+    # TODO: Add later distributed sampler for multi GPU training
+    
     print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
 
     if dagger_ratio is not None:
         assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
     
-    # TODO: Later reset again to reasonable splits
-    # Obtain train/val/test split
-    train_ratio = 2/3 # 0.90
-    val_ratio = 1/3 # 0.05
-    test_ratio = 1 - train_ratio - val_ratio
+    ds_metadata_dict = {}
+    if dagger_ratio is None:
+        # TODO: Later reset again to reasonable splits
+        # Obtain train/val/test split
+        train_ratio = 2/3 # 0.90
+        val_ratio = 1/3 # 0.05
+        test_ratio = 1 - train_ratio - val_ratio
+    else:
+        train_ratio = 1
+        val_ratio = test_ratio = 0
+
+    # Save the metadata
+    ds_metadata_dict["train_ratio"] = train_ratio
+    ds_metadata_dict["val_ratio"] = val_ratio
+    ds_metadata_dict["test_ratio"] = test_ratio
+    ds_metadata_dict["train_tissues"] = {}
+    ds_metadata_dict["val_tissues"] = {}
+    ds_metadata_dict["test_tissues"] = {}
+    ds_metadata_dict["dagger_ratio"] = dagger_ratio
+    ds_metadata_dict["history_len"] = history_len
+    ds_metadata_dict["history_skip_frame"] = history_skip_frame
+    ds_metadata_dict["prediction_offset"] = prediction_offset
+    ds_metadata_dict["camera_names"] = camera_names
+    ds_metadata_dict["test_only"] = test_only
+    ds_metadata_dict["framewise_transforms"] = framewise_transforms
+    ds_metadata_dict["dataset_dirs"] = dataset_dirs
+    ds_metadata_dict["num_episodes_list"] = num_episodes_list    
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
@@ -273,18 +299,26 @@ def load_merged_data(
         incomplete_tissue_samples = dataset_config["incomplete_tissue_samples"] if "incomplete_tissue_samples" in dataset_config else []
         tissue_names = [tissue_name for tissue_name in dataset_file_names if tissue_name.startswith("tissue") and tissue_name not in incomplete_tissue_samples]
         
-        if dagger_ratio is not None:
+        if dagger_ratio is None:
             # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
             train_tissues, val_tissues, test_tissues = split_tissue_samples(
                 dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio
             )
-            # TODO: Add to dataset_metadata_dict and output it in the dataloader?
             print(f"\nDataset: {dataset_dir}")
             print(f"Train tissues: {train_tissues}")
             print(f"Val tissues: {val_tissues}")
             print(f"Test tissues: {test_tissues}")
+            
+            ds_metadata_dict["train_tissues"][dataset_dir] = train_tissues
+            ds_metadata_dict["val_tissues"][dataset_dir] = val_tissues
+            ds_metadata_dict["test_tissues"][dataset_dir] = test_tissues
+        else:
+            train_tissues = tissue_names
+            print(f"\nDataset: {dataset_dir}")
+            print(f"Train tissues: {train_tissues}")
+            ds_metadata_dict["train_tissues"][dataset_dir] = train_tissues 
         
-        # TODO: Add later distributed sampler for multi GPU training
+        # ---------------------- Construct datasets -----------------------
         
         if dagger_ratio is not None and not test_only:
             raise NotImplementedError("DAgger not yet implemented.")
@@ -363,7 +397,8 @@ def load_merged_data(
             test_command_embeddings_dict = test_datasets[-1].command_embeddings_dict
             command_embeddings_dict.update(test_command_embeddings_dict)
             
-    # Construct the dataloaders
+    # ----------------------------- Construct the dataloaders -------------------------------
+    
     if dagger_ratio is not None and not test_only:
         # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
         merged_train_dataset = ConcatDataset(train_datasets)
@@ -395,8 +430,9 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
-        
-        return train_dataloader, (candidate_embeddings, candidate_texts)
+        ds_metadata_dict["candidate_texts"] = candidate_texts
+        ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
+        return train_dataloader, ds_metadata_dict
     
     elif not test_only:
         # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
@@ -424,8 +460,9 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
-        
-        return train_dataloader, val_dataloader, (candidate_embeddings, candidate_texts)
+        ds_metadata_dict["candidate_texts"] = candidate_texts
+        ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
+        return train_dataloader, val_dataloader, ds_metadata_dict
     
     else:
         # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
@@ -442,8 +479,9 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
-        
-        return test_dataloader, (candidate_embeddings, candidate_texts)
+        ds_metadata_dict["candidate_texts"] = candidate_texts
+        ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
+        return test_dataloader, ds_metadata_dict
 
 
 """
