@@ -6,3 +6,5 @@ model_ckpts
 examples_plots
 
 */.vscode
+
+slurm_jobs_output

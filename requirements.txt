@@ -1,4 +1,5 @@
 torch
+seaborn
 torchvision
 tqdm
 wandb
