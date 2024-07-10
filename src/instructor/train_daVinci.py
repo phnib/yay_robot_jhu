@@ -93,7 +93,7 @@ def evaluate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
-def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, max_num_images = 5):
+def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 5):
 
     model.eval()
 
@@ -143,13 +143,19 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, max
                 
     # Visualize embeddings
     if not one_hot_flag:
-        # Plot the t-SNE visualization of the embeddings of the last batch
-        # TODO: Set here also a save path
-        log_tsne_plot(candidate_embeddings, candidate_texts, all_predicted_embeddings, all_decoded_texts, all_gt_embeddings, current_epoch)
+        # Save the t-SNE visualization of the embeddings of the last batch
+        tnse_plots_folder_path = os.path.join(ckpt_dir, "tsne_plots")
+        if not os.path.exists(tnse_plots_folder_path):
+            os.makedirs(tnse_plots_folder_path, exist_ok=True)
+        save_path = os.path.join(tnse_plots_folder_path, f"embeddings_tsne_epoch_{epoch}.png")
+        log_tsne_plot(candidate_embeddings, candidate_texts, all_predicted_embeddings, all_decoded_texts, all_gt_embeddings, current_epoch, save_path)
 
-    # Create confusion matrix
-    # save_path = # TODO:
-    log_confusion_matrix(all_commands_gt, all_decoded_texts, split_name, candidate_texts, current_epoch)
+    # Create and save confusion matrix
+    conf_matrix_folder_path = os.path.join(ckpt_dir, "confusion_matrices")
+    if not os.path.exists(conf_matrix_folder_path):
+        os.makedirs(conf_matrix_folder_path, exist_ok=True)
+    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_{current_epoch}.png")
+    log_confusion_matrix(all_commands_gt, all_decoded_texts, split_name, candidate_texts, current_epoch, save_path)
 
     # Compute the success rate -> accurarcy
     accurarcy_curr_epoch = total_correct / total_predictions
@@ -198,8 +204,7 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
     draw.text((10, 10), "GT: " + gt_text, font=font, fill="white")
     draw.text((10, 50), "Pred: " + pred_text, font=font, fill="red")
 
-    if save_path is not None:
-        canvas.save(save_path)
+    canvas.save(save_path)
 
 
 def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None, save_path=None):
@@ -253,11 +258,14 @@ def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None, save_p
         fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix")
     if args.log_wandb:
         wandb.log({f"{split_name=}_confusion_matrix": fig})
+    
+    # Save with the epoch in the filename
+    plt.savefig(save_path)
     plt.close()
 
 
-# TODO: Double check if it works corrrectly - close points in high-dimensional space should be close in the 2D space
-def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings, predicted_commands, gt_embeddings, epoch):
+# TODO: check if it works corrrectly - close points in high-dimensional space should be close in the 2D space
+def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings, predicted_commands, gt_embeddings, epoch, save_path):
     
     # Convert lists to numpy arrays
     candidate_embeddings = np.array(candidate_embeddings)
@@ -268,7 +276,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
     all_unique_commands_set = set(candidate_commands)
     all_unique_predicted_commands_set = set(predicted_commands)
     if not all_unique_predicted_commands_set.issubset(all_unique_commands_set):
-        print(f"Commands that are not in the candidate commands: {all_unique_predicted_commands_set - all_unique_commands_set}")
+        print(f"\nCommands that are not in the candidate commands: {all_unique_predicted_commands_set - all_unique_commands_set}")
         raise ValueError("All predicted commands should be within the candidate commands")
 
     # Generate a color palette
@@ -293,6 +301,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
     # Plot predicted embeddings
     for i, command in enumerate(predicted_commands):
+        # TODO: Show the predicted command via marker filling and the gt command via marker edge
         plt.scatter(predicted_2d[i, 0], predicted_2d[i, 1], color=color_map[command], alpha=0.5)
 
     plt.xlabel("t-SNE Dimension 1")
@@ -303,14 +312,11 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
     plt.legend(by_label.values(), by_label.keys())
 
     # Save with the epoch in the filename
-    tnse_plots_folder_path = os.path.join(ckpt_dir, "tsne_plots")
-    os.makedirs(tnse_plots_folder_path, exist_ok=True)
-    image_save_path = os.path.join(tnse_plots_folder_path, f"embeddings_tsne_epoch_{epoch}.png")
-    plt.savefig(image_save_path)
+    plt.savefig(save_path)
 
     # Log the image to wandb if logging is enabled
     if args.log_wandb:
-        wandb.log({"t-SNE Visualization": [wandb.Image(image_save_path, caption=f"Epoch {epoch}")]})
+        wandb.log({"t-SNE Visualization": [wandb.Image(save_path, caption=f"Epoch {epoch}")]})
     plt.close()
 
 # -----------------------------
@@ -337,23 +343,21 @@ def best_checkpoint(ckpt_dir):
     Returns the best checkpoint file from the given directory (if exists best).
     """
 
-    # Starts with "best_val_loss_" and ends with ".ckpt"
+    # Starts with "best_val_loss_" and ends with ".ckpt" - could be multiple from different ckpt runs - take the last one
     best_val_ckpt_name_list = [
         file_name
         for file_name in os.listdir(ckpt_dir)
         if file_name.startswith("best_val_loss_") and file_name.endswith(".ckpt")
     ]
     
+    epoch_numbers = [int(file_name.split("=")[1].split(".")[0]) for file_name in best_val_ckpt_name_list]
+
     # If no valid checkpoints are found, return None
-    if not best_val_ckpt_name_list:
+    if not epoch_numbers:
         return None, None
-    else:
-        best_val_ckpt_name = best_val_ckpt_name_list[0]
-    
-    # Extract the epoch number from the file name
-    epoch = int(best_val_ckpt_name.split("_")[3].split(".")[0])
-    
-    return os.path.join(ckpt_dir, best_val_ckpt_name), epoch
+
+    latest_best_idx = max(epoch_numbers)
+    return os.path.join(ckpt_dir, f"best_val_loss_epoch={latest_best_idx}.ckpt"), latest_best_idx
 
 def latest_checkpoint(ckpt_dir):
     """
@@ -364,7 +368,7 @@ def latest_checkpoint(ckpt_dir):
         for f in os.listdir(ckpt_dir)
         if f.startswith("epoch_") and f.endswith(".ckpt")
     ]
-    epoch_numbers = [int(f.split("_")[1].split(".")[0]) for f in all_ckpts]
+    epoch_numbers = [int(file_name.split("_")[1].split(".")[0]) for file_name in all_ckpts]
 
     # If no valid checkpoints are found, return None
     if not epoch_numbers:
@@ -383,11 +387,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and evaluate command prediction model using CLIP.")
     parser.add_argument('--task_name', nargs='+', type=str, help='List of task names', required=True)
     parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--load_best_ckpt_flag', action='store_true', help='Use the best checkpoint based on the validation loss if continue training on available checkpoint')
     parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument('--weight_decay', action='store', type=float, help='weight_decay', default=0.01)
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=3)
@@ -399,7 +403,7 @@ if __name__ == "__main__":
     parser.add_argument('--validation_interval', action='store', type=int, help='validation_interval', default=3)
     parser.add_argument('--save_ckpt_interval', action='store', type=int, help='save_ckpt_interval', default=100)
     parser.add_argument('--early_stopping_interval', action='store', type=int, help='early_stopping_interval', default=None)
-    # TODO: Maybe add later a list of transformations/augmentations that should be applied as args
+    parser.add_argument('--load_best_ckpt_flag', action='store_true', help='Use the best checkpoint based on the validation loss if continue training on available checkpoint')
 
     args = parser.parse_args()
 
@@ -494,11 +498,11 @@ if __name__ == "__main__":
         run_name = "instructor." + ckpt_dir.split("/")[-1] + f".{args.seed}"
         wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
         # check if it exists
-        if os.path.exists(wandb_run_id_path): # TODO: Add later again - ignore for now bc of the warnings
+        if os.path.exists(wandb_run_id_path): 
             with open(wandb_run_id_path, "r") as f:
                 saved_run_id = f.read().strip()
             wandb.init(
-                project="yay-surgical-robot", entity=wandb_entity, name=run_name, resume=saved_run_id, config=wandb_metadata # TODO: Remove config here?
+                project="yay-surgical-robot", entity=wandb_entity, name=run_name, resume=saved_run_id, config=wandb_metadata
             )
         else:
             wandb.init(
@@ -518,7 +522,7 @@ if __name__ == "__main__":
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]    
     model = build_instructor(args.history_len, candidate_embeddings, candidate_texts, device, args.one_hot_flag)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr) # TODO: Add here later also further parameters like weight decay, ..
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = torch.nn.CrossEntropyLoss()
 
     # Load the most recent checkpoint if available
@@ -526,16 +530,16 @@ if __name__ == "__main__":
         os.makedirs(ckpt_dir)
         latest_idx = 0
     else:
-        # Load the most recent checkpoint if available # TODO: Later rather load the best model based on the validation loss?!
+        # Load the most recent checkpoint if available
         if args.load_best_ckpt_flag:
             latest_ckpt, latest_idx = best_checkpoint(ckpt_dir)
         else:
             latest_ckpt, latest_idx = latest_checkpoint(args.ckpt_dir)
         if latest_ckpt:
-            print(f"Loading checkpoint: {latest_ckpt}")
+            print(f"\nLoading checkpoint: {latest_ckpt}")
             model.load_state_dict(torch.load(latest_ckpt, map_location=device))
         else:
-            print("No checkpoint found.")
+            print("\nNo checkpoint found.")
             latest_idx = 0
 
     # ---------------------- Training loop ----------------------
@@ -547,12 +551,13 @@ if __name__ == "__main__":
 
     # Test the model using the latest checkpoint - don't train
     if args.test_only_flag:
-        test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag)
+        test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, ckpt_dir)
         exit()
 
     # Training loop
     pbar_epochs = tqdm(range(latest_idx, args.num_epochs), desc="Epochs")
     best_val_loss = float("inf")
+    first_iteration_flag = True
     for epoch in pbar_epochs:
         if args.log_wandb:
             wandb.log({"Epoch": epoch})
@@ -563,7 +568,7 @@ if __name__ == "__main__":
             
             # Test the model and log success rate every 200 epochs
             if epoch % args.validation_interval == 0 and (epoch > 0 or dagger_ratio is not None):
-                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag)
+                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, ckpt_dir)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if dagger_ratio is None else None})
 
@@ -571,6 +576,8 @@ if __name__ == "__main__":
             wandb.log({"Epoch Train Loss": train_loss})
             if dagger_ratio is None:
                 wandb.log({"Epoch Eval Loss": val_loss})
+        else:
+            print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
 
         # -------------------------- Checkpoints --------------------------
 
@@ -591,16 +598,17 @@ if __name__ == "__main__":
         # Save always the best performing model based on the validation loss
         if dagger_ratio is None and val_loss < best_val_loss:
             best_val_loss = val_loss
-            if epoch > 0:
+            if not first_iteration_flag:
                 prev_best_val_epoch = best_val_epoch
             best_val_epoch = epoch
             best_ckpt_path = os.path.join(ckpt_dir, f"best_val_loss_{epoch=}.ckpt")
             torch.save(model.state_dict(), best_ckpt_path)
             # Remove the previous best checkpoint if it exists
-            if epoch > 0:
+            if not first_iteration_flag:
                 prev_best_ckpt_path = os.path.join(ckpt_dir, f"best_val_loss_epoch={prev_best_val_epoch}.ckpt")
                 if os.path.exists(prev_best_ckpt_path):
                     os.remove(prev_best_ckpt_path)
+            first_iteration_flag = False
             
         # Early stopping: Stop training if the validation loss has not improved for specific number of epochs
         if args.early_stopping_interval is not None:
