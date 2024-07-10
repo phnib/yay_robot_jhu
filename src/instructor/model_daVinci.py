@@ -255,7 +255,7 @@ if __name__ == "__main__":
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
     history_len = 2
     prediction_offset = 0 # Get command for the current timestep
-    history_skip_frame = 30
+    history_step_size = 30
     num_episodes = 200 # Number of randlomy generated stitched episodes
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
@@ -287,7 +287,7 @@ if __name__ == "__main__":
         camera_file_suffixes=camera_file_suffixes,
         history_len=history_len,
         prediction_offset=prediction_offset,
-        history_skip_frame=history_skip_frame,
+        history_step_size=history_step_size,
         batch_size_train=batch_size_train,
         batch_size_val=batch_size_val,
         framewise_transforms=framewise_transforms,
@@ -343,7 +343,7 @@ if __name__ == "__main__":
         example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "untrained_model_pred")
         if not os.path.exists(example_dataset_plots_folder_path):
             os.makedirs(example_dataset_plots_folder_path)
-        file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{split_name=}{history_len=}_{history_skip_frame=}.png")
+        file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{split_name=}{history_len=}_{history_step_size=}.png")
         file_path = os.path.join(example_dataset_plots_folder_path, file_name)
         plt.savefig(file_path)
         print(f"Saved {file_name}\n---------")

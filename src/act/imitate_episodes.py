@@ -65,11 +65,11 @@ def on_release(key):
         option = 0
 
 
-def predict_instruction(instructor, history_obs, history_skip_frame, query_frequency):
+def predict_instruction(instructor, history_obs, history_step_size, query_frequency):
     # Ensuring that instructor_input has the last few observations with length history_len + 1
     # and that the last observation in history_obs is the last one in instructor_input.
     selected_indices = [
-        -1 - i * max((history_skip_frame // query_frequency), 1)
+        -1 - i * max((history_step_size // query_frequency), 1)
         for i in range(instructor.history_len + 1)
     ]
     selected_obs = [
@@ -162,7 +162,7 @@ def main(args):
     multi_gpu = args["multi_gpu"]
     instructor_path = args["instructor_path"]
     history_len = args["history_len"]
-    history_skip_frame = args["history_skip_frame"]
+    history_step_size = args["history_step_size"]
     hl_margin = args["hl_margin"]
 
     # Set up wandb
@@ -294,7 +294,7 @@ def main(args):
         "max_skill_len": max_skill_len,
         "instructor_path": instructor_path,
         "history_len": history_len,
-        "history_skip_frame": history_skip_frame,
+        "history_step_size": history_step_size,
         "hl_margin": hl_margin,
     }
 
@@ -472,7 +472,7 @@ def eval_bc(config, ckpt_name, save_episode=True, dataset_dirs=None):
     max_skill_len = config["max_skill_len"]
     instructor_path = config["instructor_path"]
     history_len = config["history_len"]
-    history_skip_frame = config["history_skip_frame"]
+    history_step_size = config["history_step_size"]
     hl_margin = config["hl_margin"]
     print(f"{hl_margin=}")
     use_instructor = instructor_path is not None
@@ -556,7 +556,7 @@ def eval_bc(config, ckpt_name, save_episode=True, dataset_dirs=None):
         instructor.eval()
 
         # Keep a queue of fixed length of the previous observations
-        history_obs = deque(maxlen=history_len * history_skip_frame + 1)
+        history_obs = deque(maxlen=history_len * history_step_size + 1)
         history_ts = deque(maxlen=hl_margin + 1)
         history_acs = deque(maxlen=hl_margin)
     else:
@@ -692,7 +692,7 @@ def eval_bc(config, ckpt_name, save_episode=True, dataset_dirs=None):
                                     command = predict_instruction(
                                         instructor,
                                         history_obs,
-                                        history_skip_frame,
+                                        history_step_size,
                                         query_frequency,
                                     )
                                 else:
@@ -713,7 +713,7 @@ def eval_bc(config, ckpt_name, save_episode=True, dataset_dirs=None):
                         all_actions = policy(
                             qpos, curr_image, command_embedding=command_embedding
                         )
-                    elif use_instructor and t % history_skip_frame == 0:
+                    elif use_instructor and t % history_step_size == 0:
                         curr_image = get_image(ts, camera_names)
                         history_obs.append(curr_image)
 
@@ -1039,7 +1039,7 @@ if __name__ == "__main__":
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--instructor_path', action='store', type=str, help='instructor_path', required=False)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=2)
-    parser.add_argument('--history_skip_frame', action='store', type=int, help='history_skip_frame', default=50)
+    parser.add_argument('--history_step_size', action='store', type=int, help='history_step_size', default=50)
     parser.add_argument('--hl_margin', action='store', type=int, help='the number of timesteps to record before and after language correction', default=100)
 
     main(vars(parser.parse_args()))

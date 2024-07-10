@@ -73,7 +73,7 @@ def get_args_parser():
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--instructor_path', action='store', type=str, help='instructor_path', required=False)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=2)
-    parser.add_argument('--history_skip_frame', action='store', type=int, help='history_skip_frame', default=50)
+    parser.add_argument('--history_step_size', action='store', type=int, help='history_step_size', default=50)
     parser.add_argument('--hl_margin', action='store', type=int, help='the number of timesteps to record before and after language correction', default=50)
 
     return parser

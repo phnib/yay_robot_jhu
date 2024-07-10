@@ -2,6 +2,7 @@ import os
 # import h5py
 import json
 import sys
+from collections import defaultdict
 
 import yaml
 import cv2
@@ -78,7 +79,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         camera_file_suffixes,
         history_len=4,
         prediction_offset=15,
-        history_skip_frame=30,
+        history_step_size=30,
         num_episodes=200,
         framewise_transforms=None,
     ):
@@ -93,7 +94,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.camera_file_suffixes = camera_file_suffixes
         self.history_len = history_len
         self.prediction_offset = prediction_offset
-        self.history_skip_frame = history_skip_frame
+        self.history_step_size = history_step_size
         self.num_episodes = num_episodes
         self.framewise_transforms = framewise_transforms
         
@@ -104,8 +105,12 @@ class SequenceDataset(torch.utils.data.Dataset):
             self.before_phase_offset = config_dict["data"]["before_phase_offset"]
             self.after_phase_offset = config_dict["data"]["after_phase_offset"]
  
-        # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
+        # Initialize the phase_len_dict with defaultdict
+        phase_len_dict = defaultdict(list)
+
+        # Initialize tissue_phase_demo_dict
         self.tissue_phase_demo_dict = {}
+
         for tissue_sample_name in tissue_sample_names:
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name))]
@@ -113,8 +118,17 @@ class SequenceDataset(torch.utils.data.Dataset):
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases_ordered:
                 files_in_phase_folder = os.listdir(os.path.join(tissue_sample_dir_path, phase_sample))
-                demo_samples = [demo_sample for demo_sample in files_in_phase_folder if demo_sample[8] == "-"] 
+                demo_samples = [demo_sample for demo_sample in files_in_phase_folder if demo_sample[8] == "-"]
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
+                # Add the length of the phase for current demo to phase_len_dict
+                # TODO: Check if this works
+                for demo_sample in demo_samples:
+                    start, end = self.get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample))
+                    demo_num_frames_valid = end - start + 1
+                    phase_len_dict[phase_sample].append(demo_num_frames_valid)
+            
+        # Compute the dataset statistics
+        self.ds_statistics_dict = self.compute_dataset_statistics(phase_len_dict)
                 
         # Generate the embeddings for all phase commands
         encoder_name = "distilbert"
@@ -126,6 +140,36 @@ class SequenceDataset(torch.utils.data.Dataset):
     def __len__(self):
         # Here this means the number of randomly generated stitched episodes
         return self.num_episodes
+
+    def get_valid_demo_start_end_indices(self, demo_folder_path):
+        # Load the start and end indices for the current demo as the valid range of the demo
+        demo_num_frames_total = len(os.listdir(os.path.join(demo_folder_path, self.camera_names[0])))
+        start, end = 0, demo_num_frames_total - 1
+        indices_curated_file_path = os.path.join(demo_folder_path, "indices_curated.json")
+        if os.path.exists(indices_curated_file_path):
+            with open(indices_curated_file_path, 'r') as indices_curated_file:
+                try:
+                    indices_curated_dict = json.load(indices_curated_file)
+                except json.JSONDecodeError:
+                    print(f"Error reading indices_curated.json for {demo_folder_path}. Continue with max recording range.")
+                if "start" in indices_curated_dict:
+                    start = max(indices_curated_dict['start'] - self.before_phase_offset, start)
+                if "end" in indices_curated_dict:
+                    end = min(indices_curated_dict['end'] + self.after_phase_offset, end)
+        return start, end
+
+    def compute_dataset_statistics(self, phase_len_dict):
+        # Compute the statistics of the dataset
+        ds_statistics_dict = {}
+        for phase_name, phase_len_list in phase_len_dict.items():
+            ds_statistics_dict[phase_name] = {
+                "min": min(phase_len_list),
+                "max": max(phase_len_list),
+                "mean": sum(phase_len_list) / len(phase_len_list),
+                "std": np.std(phase_len_list),
+                "num_demos": len(phase_len_list),
+            }
+        return ds_statistics_dict
 
     def get_command_for_ts(self, selected_phase_demo_dict, target_ts):
         # Returns the command embedding and the command for the target timestep
@@ -166,23 +210,8 @@ class SequenceDataset(torch.utils.data.Dataset):
             selected_phase_demo_dict[phase]["command"], selected_phase_demo_dict[phase]["embedding"] = self.command_embeddings_dict[phase]
             
             # Load the start and end indices for the current demo as the valid range of the demo
-            selected_date_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
-            demo_num_frames_total = len(os.listdir(os.path.join(selected_date_folder_path, self.camera_names[0])))
-            start, end = 0, demo_num_frames_total - 1
-            # Check for "indices_curated.json" file (for more accurate start and end indices)
-            indices_curated_file_path = os.path.join(selected_date_folder_path, "indices_curated.json")
-            if os.path.exists(indices_curated_file_path):
-                with open(indices_curated_file_path, 'r') as indices_curated_file:
-                    try:
-                        indices_curated_dict = json.load(indices_curated_file)
-                    except json.JSONDecodeError:
-                        print(f"Error reading indices_curated.json for {selected_date_folder_path}. Continue with max recording range.")
-
-                    # Get start and end indices from the json file
-                    if "start" in indices_curated_dict:
-                        start = max(indices_curated_dict['start'] - self.before_phase_offset, start)
-                    if "end" in indices_curated_dict:
-                        end = min(indices_curated_dict['end'] + self.after_phase_offset, end)
+            selected_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
+            start, end = self.get_valid_demo_start_end_indices(selected_demo_folder_path)
             selected_phase_demo_dict[phase]["demo_rel_start_idx"] = start
             
             # Count the number of valid frames for the current demo
@@ -195,10 +224,10 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # Sample a random curr_ts and compute the start_ts and target_ts
         curr_ts = np.random.randint(
-            self.history_len * self.history_skip_frame,
+            self.history_len * self.history_step_size,
             episode_num_frames - self.prediction_offset,
         )
-        start_ts = curr_ts - self.history_len * self.history_skip_frame
+        start_ts = curr_ts - self.history_len * self.history_step_size
         target_ts = curr_ts + self.prediction_offset
         
         # Retrieve the language embedding for the target_ts
@@ -211,7 +240,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # Construct the image sequences for the desired timesteps
         image_sequence = []
-        for ts in range(start_ts, curr_ts + 1, self.history_skip_frame):
+        for ts in range(start_ts, curr_ts + 1, self.history_step_size):
             image_dict = {}
             ts_phase_folder, ts_demo_folder, ts_demo_frame_idx = self.get_current_phase_demo_folder_and_demo_frame_idx(selected_phase_demo_dict, ts)
             for cam_name, cam_file_suffix in zip(self.camera_names, self.camera_file_suffixes):
@@ -248,14 +277,14 @@ def load_merged_data(
     batch_size_val,
     history_len=1,
     prediction_offset=10,
-    history_skip_frame=1,
+    history_step_size=1,
     test_only=False,
     framewise_transforms=None,
     dagger_ratio=None,
 ):
     # TODO: Add later distributed sampler for multi GPU training
     
-    print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
+    print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
 
     if dagger_ratio is not None:
         assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
@@ -278,9 +307,12 @@ def load_merged_data(
     ds_metadata_dict["train_tissues"] = {}
     ds_metadata_dict["val_tissues"] = {}
     ds_metadata_dict["test_tissues"] = {}
+    ds_metadata_dict["train_ds_statistics"] = {}
+    ds_metadata_dict["val_ds_statistics"] = {}
+    ds_metadata_dict["test_ds_statistics"] = {}
     ds_metadata_dict["dagger_ratio"] = dagger_ratio
     ds_metadata_dict["history_len"] = history_len
-    ds_metadata_dict["history_skip_frame"] = history_skip_frame
+    ds_metadata_dict["history_step_size"] = history_step_size
     ds_metadata_dict["prediction_offset"] = prediction_offset
     ds_metadata_dict["camera_names"] = camera_names
     ds_metadata_dict["test_only"] = test_only
@@ -331,11 +363,16 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
             
+            # Get dataset statistics
+            train_ds_statistics_dict = train_datasets[-1].ds_statistics_dict
+            ds_metadata_dict["train_ds_statistics"][dataset_dir] = train_ds_statistics_dict
+            
+            # Get the command embeddings for the train datasets and update the command embeddings dictionary
             train_command_embeddings_dict = train_datasets[-1].command_embeddings_dict
             command_embeddings_dict.update(train_command_embeddings_dict)
             
@@ -349,7 +386,7 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
@@ -361,10 +398,16 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
+            
+            # Get dataset statistics
+            train_ds_statistics_dict = train_datasets[-1].ds_statistics_dict
+            val_ds_statistics_dict = val_datasets[-1].ds_statistics_dict
+            ds_metadata_dict["train_ds_statistics"][dataset_dir] = train_ds_statistics_dict
+            ds_metadata_dict["val_ds_statistics"][dataset_dir] = val_ds_statistics_dict
             
             # Get the command embeddings for the train and val datasets
             train_command_embeddings_dict = train_datasets[-1].command_embeddings_dict
@@ -388,10 +431,14 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
+            
+            # Get dataset statistics
+            test_ds_statistics_dict = test_datasets[-1].ds_statistics_dict
+            ds_metadata_dict["test_ds_statistics"][dataset_dir] = test_ds_statistics_dict
             
             # Get the command embeddings for the test datasets (should be the same as for train and val datasets)
             test_command_embeddings_dict = test_datasets[-1].command_embeddings_dict
@@ -501,7 +548,7 @@ if __name__ == "__main__":
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
     prediction_offset = 0 # Get command for the current timestep
-    history_skip_frame = 1
+    history_step_size = 1
     num_episodes = 200 # Number of randlomy generated stitched episodes
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
@@ -527,7 +574,7 @@ if __name__ == "__main__":
         camera_file_suffixes,
         history_len,
         prediction_offset,
-        history_skip_frame,
+        history_step_size,
         num_episodes,
         framewise_transforms
     )
@@ -560,7 +607,7 @@ if __name__ == "__main__":
     example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset")
     if not os.path.exists(example_dataset_plots_folder_path):
         os.makedirs(example_dataset_plots_folder_path)
-    file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_skip_frame=}.png")
+    file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_step_size=}.png")
     file_path = os.path.join(example_dataset_plots_folder_path, file_name)
     plt.savefig(file_path)
     print(f"Saved {file_name}.")

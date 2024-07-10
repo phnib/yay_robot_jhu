@@ -20,7 +20,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         camera_names,
         history_len=5,
         prediction_offset=10,
-        history_skip_frame=1,
+        history_step_size=1,
         random_crop=False,
     ):
         super().__init__()
@@ -29,7 +29,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.camera_names = camera_names
         self.history_len = history_len
         self.prediction_offset = prediction_offset
-        self.history_skip_frame = history_skip_frame
+        self.history_step_size = history_step_size
         self.random_crop = random_crop
 
     def __len__(self):
@@ -59,10 +59,10 @@ class SequenceDataset(torch.utils.data.Dataset):
             prediction_offset = self.prediction_offset
             try:
                 curr_ts = np.random.randint(
-                    self.history_len * self.history_skip_frame,
+                    self.history_len * self.history_step_size,
                     total_timesteps - prediction_offset,
                 )
-                start_ts = curr_ts - self.history_len * self.history_skip_frame
+                start_ts = curr_ts - self.history_len * self.history_step_size
                 target_ts = curr_ts + prediction_offset
             except ValueError:
                 # sample a different episode in range len(self.episode_ids)
@@ -83,7 +83,7 @@ class SequenceDataset(torch.utils.data.Dataset):
 
             # Construct the image sequences for the desired timesteps
             image_sequence = []
-            for ts in range(start_ts, curr_ts + 1, self.history_skip_frame):
+            for ts in range(start_ts, curr_ts + 1, self.history_step_size):
                 image_dict = {}
                 for cam_name in self.camera_names:
                     image_dict[cam_name] = root[f"/observations/images/{cam_name}"][ts]
@@ -119,14 +119,14 @@ def load_merged_data(
     batch_size_val,
     history_len=1,
     prediction_offset=10,
-    history_skip_frame=1,
+    history_step_size=1,
     random_crop=False,
     dagger_ratio=None,
 ):
     assert len(dataset_dirs) == len(
         num_episodes_list
     ), "Length of dataset_dirs and num_episodes_list must be the same."
-    print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
+    print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
     if random_crop:
         print(f"Random crop enabled")
     if dagger_ratio is not None:
@@ -162,7 +162,7 @@ def load_merged_data(
             camera_names,
             history_len,
             prediction_offset,
-            history_skip_frame,
+            history_step_size,
             random_crop,
         )
         for dataset_dir in dataset_dirs
@@ -174,7 +174,7 @@ def load_merged_data(
             camera_names,
             history_len,
             prediction_offset,
-            history_skip_frame,
+            history_step_size,
             random_crop,
         )
         for dataset_dir in dataset_dirs
@@ -186,7 +186,7 @@ def load_merged_data(
             camera_names,
             history_len,
             prediction_offset,
-            history_skip_frame,
+            history_step_size,
             random_crop,
         )
         for dataset_dir in dataset_dirs
