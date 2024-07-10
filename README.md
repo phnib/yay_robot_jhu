@@ -143,7 +143,7 @@ python instructor/train.py \
     --task_name aloha_bag ... \
     --ckpt_dir $YOUR_CKPT_PATH/hl_ckpt/aloha_bag \
     --batch_size 64 --num_epochs 15000  --lr 1e-4 \
-    --history_skip_frame 50 --prediction_offset 20 --history_len 3 --seed 0 --log_wandb
+    --history_step_size 50 --prediction_offset 20 --history_len 3 --seed 0 --log_wandb
 ```
 
 ### Deploy
@@ -157,7 +157,7 @@ python act/imitate_episodes.py \
     --policy_class ACT --kl_weight 80 --chunk_size 100 --hidden_dim 512 --batch_size 16 --dim_feedforward 3200 \
     --use_language --language_encoder distilbert --max_skill_len 200 --num_epochs 30000  --lr 1e-4 \
     --image_encoder efficientnet_b3film --seed 0 --log_wandb --eval \
-    --history_len 3 --history_skip_frame 50 \
+    --history_len 3 --history_step_size 50 \
     --instructor_path $YOUR_CKPT_PATH/hl_ckpt/aloha_bag/epoch_14900.ckpt
 ```
 
@@ -187,7 +187,7 @@ python instructor/train.py \
     --task_name aloha_bag ... $LAST_DATASET_DIR_language_correction \
     --ckpt_dir $YOUR_CKPT_PATH/hl_ckpt/aloha_bag_lc01 \
     --batch_size 64 --num_epochs 5000 --lr 1e-4 --dagger_ratio 0.1\
-    --history_skip_frame 50 --prediction_offset 20 --history_len 3 --seed 0 --log_wandb
+    --history_step_size 50 --prediction_offset 20 --history_len 3 --seed 0 --log_wandb
 ```
 
 ## Citation

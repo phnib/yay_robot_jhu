@@ -313,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=1)
     parser.add_argument('--prediction_offset', action='store', type=int, help='prediction_offset', default=20)
-    parser.add_argument('--history_skip_frame', action='store', type=int, help='history_skip_frame', default=50)
+    parser.add_argument('--history_step_size', action='store', type=int, help='history_step_size', default=50)
     parser.add_argument('--test_only', action='store_true', help='Test the model using the latest checkpoint and exit')
     parser.add_argument('--random_crop', action='store_true')
     parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None)
@@ -354,7 +354,7 @@ if __name__ == "__main__":
         batch_size_val=args.batch_size,
         history_len=args.history_len,
         prediction_offset=args.prediction_offset,
-        history_skip_frame=args.history_skip_frame,
+        history_step_size=args.history_step_size,
         random_crop=args.random_crop,
         dagger_ratio=dagger_ratio,
     )

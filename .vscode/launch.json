@@ -24,7 +24,7 @@
                 "--batch_size", "8",
                 "--num_epochs", "100",
                 "--lr", "1e-4",
-                "--history_skip_frame", "1",
+                "--history_step_size", "1",
                 "--prediction_offset", "0", // TODO: Change later to transition prediction
                 "--history_len", "0",
                 "--seed", "0",

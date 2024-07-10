@@ -78,7 +78,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         camera_file_suffixes,
         history_len=4,
         prediction_offset=15,
-        history_skip_frame=30,
+        history_step_size=30,
         num_episodes=200,
         framewise_transforms=None,
     ):
@@ -93,7 +93,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.camera_file_suffixes = camera_file_suffixes
         self.history_len = history_len
         self.prediction_offset = prediction_offset
-        self.history_skip_frame = history_skip_frame
+        self.history_step_size = history_step_size
         self.num_episodes = num_episodes
         self.framewise_transforms = framewise_transforms
         
@@ -195,10 +195,10 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # Sample a random curr_ts and compute the start_ts and target_ts
         curr_ts = np.random.randint(
-            self.history_len * self.history_skip_frame,
+            self.history_len * self.history_step_size,
             episode_num_frames - self.prediction_offset,
         )
-        start_ts = curr_ts - self.history_len * self.history_skip_frame
+        start_ts = curr_ts - self.history_len * self.history_step_size
         target_ts = curr_ts + self.prediction_offset
         
         # Retrieve the language embedding for the target_ts
@@ -211,7 +211,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # Construct the image sequences for the desired timesteps
         image_sequence = []
-        for ts in range(start_ts, curr_ts + 1, self.history_skip_frame):
+        for ts in range(start_ts, curr_ts + 1, self.history_step_size):
             image_dict = {}
             ts_phase_folder, ts_demo_folder, ts_demo_frame_idx = self.get_current_phase_demo_folder_and_demo_frame_idx(selected_phase_demo_dict, ts)
             for cam_name, cam_file_suffix in zip(self.camera_names, self.camera_file_suffixes):
@@ -248,14 +248,14 @@ def load_merged_data(
     batch_size_val,
     history_len=1,
     prediction_offset=10,
-    history_skip_frame=1,
+    history_step_size=1,
     test_only=False,
     framewise_transforms=None,
     dagger_ratio=None,
 ):
     # TODO: Add later distributed sampler for multi GPU training
     
-    print(f"{history_len=}, {history_skip_frame=}, {prediction_offset=}")
+    print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
 
     if dagger_ratio is not None:
         assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
@@ -280,7 +280,7 @@ def load_merged_data(
     ds_metadata_dict["test_tissues"] = {}
     ds_metadata_dict["dagger_ratio"] = dagger_ratio
     ds_metadata_dict["history_len"] = history_len
-    ds_metadata_dict["history_skip_frame"] = history_skip_frame
+    ds_metadata_dict["history_step_size"] = history_step_size
     ds_metadata_dict["prediction_offset"] = prediction_offset
     ds_metadata_dict["camera_names"] = camera_names
     ds_metadata_dict["test_only"] = test_only
@@ -331,7 +331,7 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
@@ -349,7 +349,7 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
@@ -361,7 +361,7 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
@@ -388,7 +388,7 @@ def load_merged_data(
                         camera_file_suffixes,
                         history_len,
                         prediction_offset,
-                        history_skip_frame,
+                        history_step_size,
                         num_episodes,
                         framewise_transforms)
             )
@@ -501,7 +501,7 @@ if __name__ == "__main__":
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
     prediction_offset = 0 # Get command for the current timestep
-    history_skip_frame = 1
+    history_step_size = 1
     num_episodes = 200 # Number of randlomy generated stitched episodes
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
@@ -527,7 +527,7 @@ if __name__ == "__main__":
         camera_file_suffixes,
         history_len,
         prediction_offset,
-        history_skip_frame,
+        history_step_size,
         num_episodes,
         framewise_transforms
     )
@@ -560,7 +560,7 @@ if __name__ == "__main__":
     example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset")
     if not os.path.exists(example_dataset_plots_folder_path):
         os.makedirs(example_dataset_plots_folder_path)
-    file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_skip_frame=}.png")
+    file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_step_size=}.png")
     file_path = os.path.join(example_dataset_plots_folder_path, file_name)
     plt.savefig(file_path)
     print(f"Saved {file_name}.")

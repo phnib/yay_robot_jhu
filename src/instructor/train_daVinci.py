@@ -7,7 +7,7 @@ python src/instructor/train_daVinci.py \
     --batch_size 64 \
     --num_epochs 15000 \
     --lr 1e-4 \
-    --history_skip_frame 30 \
+    --history_step_size 30 \
     --prediction_offset 15 \
     --history_len 3 \
     --seed 0 \
@@ -392,7 +392,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=3)
     parser.add_argument('--prediction_offset', action='store', type=int, help='prediction_offset', default=15)
-    parser.add_argument('--history_skip_frame', action='store', type=int, help='history_skip_frame', default=30)
+    parser.add_argument('--history_step_size', action='store', type=int, help='history_step_size', default=30)
     parser.add_argument('--test_only_flag', action='store_true', help='Test the model using the latest checkpoint and exit')
     parser.add_argument('--one_hot_flag', action='store_true', help='Use one hot encoding for the commands')
     parser.add_argument('--dagger_ratio', action='store', type=float, help='dagger_ratio', default=None)
@@ -449,7 +449,7 @@ if __name__ == "__main__":
             batch_size_val=args.batch_size,
             history_len=args.history_len,
             prediction_offset=args.prediction_offset,
-            history_skip_frame=args.history_skip_frame,
+            history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
             framewise_transforms=framewise_transforms,
             dagger_ratio=dagger_ratio,
@@ -464,7 +464,7 @@ if __name__ == "__main__":
             batch_size_val=args.batch_size,
             history_len=args.history_len,
             prediction_offset=args.prediction_offset,
-            history_skip_frame=args.history_skip_frame,
+            history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
             framewise_transforms=framewise_transforms,
             dagger_ratio=dagger_ratio,
@@ -478,7 +478,7 @@ if __name__ == "__main__":
             batch_size=args.batch_size,
             history_len=args.history_len,
             prediction_offset=args.prediction_offset,
-            history_skip_frame=args.history_skip_frame,
+            history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
             framewise_transforms=framewise_transforms,
             dagger_ratio=dagger_ratio,
