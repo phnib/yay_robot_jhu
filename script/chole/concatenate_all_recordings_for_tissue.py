@@ -100,16 +100,15 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
 
 if __name__ == "__main__":
     from datetime import datetime
-
-    # Get the current file's directory
-    data_curation_path = Path(__file__).resolve().parent
-
+    import os
+    
     # Set the base and output path
-    base_path = data_curation_path.parent / "chole_dataset" / "base_chole_clipping_cutting"
+    chole_scripts_path = Path(__file__).parent
+    base_path =  os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    output_path = data_curation_path / "AllDemosVideos"
+    output_path = Path(os.path.join(chole_scripts_path, "AllDemosVideos"))
 
     # Generate the combined video
     tissue_idx = 1
-    before_phase_offset, after_phase_offset = 5, 5
+    before_phase_offset, after_phase_offset = 0, 0 # 5, 5
     create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset, before_phase_offset)

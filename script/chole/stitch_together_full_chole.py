@@ -99,8 +99,8 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
                 final_image = cv2.hconcat(images)
                 
                 # Calculate text position to center over the 'left_img_dir' image
-                text_position_x = widths[0] + (widths[1] // 2) - 100  # Center text on the second image
                 text = f"Folder: {phase_folder_path.stem}"
+                text_position_x = widths[0] + (widths[1] // 2) - 325  # Center text on the second image
                 cv2.putText(final_image, text, (text_position_x, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
                 # Write the final image to the video
@@ -117,19 +117,18 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
 if __name__ == "__main__":
     from pathlib import Path
     from datetime import datetime
-
-    # Get the current file's directory
-    data_curation_path = Path(__file__).resolve().parent
+    import os
 
     # Set the base and output path
-    base_path = data_curation_path.parent / "chole_dataset" / "base_chole_clipping_cutting"
+    chole_scripts_path = Path(__file__).parent
+    base_path =  os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    output_path = data_curation_path / "GeneratedStitchedEpisodes" / timestamp
+    output_path = Path(os.path.join(chole_scripts_path, "GeneratedStitchedEpisodes", timestamp))
 
     # Generate the combined video
-    num_videos = 10
+    num_videos = 5
     num_phases = 17
-    tissue_idx = 4  # tissue_1 has no continuous phases, so we are using >= tissue_4
-    before_phase_offset, after_phase_offset = 5, 15
+    tissue_idx = 5  # tissue_1 has no continuous phases, so we are using >= tissue_4
+    before_phase_offset, after_phase_offset = 0, 0 # 5, 15
     create_combined_video(base_path, output_path, num_videos, num_phases, tissue_idx, after_phase_offset, before_phase_offset)
 
