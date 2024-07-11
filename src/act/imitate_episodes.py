@@ -1,3 +1,12 @@
+
+
+""" 
+TODO: 
+1. merge load_merged_data and load_data_dvrk
+2. merge task configs
+3. 
+
+"""
 import sys
 sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha
 import torch
@@ -21,6 +30,8 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from sim_env import BOX_POSE
+
+## TODO: merge load_merged_data and load_data_dvrk
 from utils import load_merged_data  # data functions
 from utils import sample_box_pose, sample_insertion_pose  # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict  # helper functions
@@ -212,8 +223,9 @@ def main(args):
 
             task_config = SIM_TASK_CONFIGS[task]
         else:
-            from aloha_pro.aloha_scripts.constants import TASK_CONFIGS
-
+            # from aloha_pro.aloha_scripts.constants import TASK_CONFIGS
+            
+            from dvrk_scripts.constants_dvrk import TASK_CONFIGS
             task_config = TASK_CONFIGS[task]
 
         dataset_dirs.append(task_config["dataset_dir"])
@@ -226,7 +238,7 @@ def main(args):
     )
 
     # fixed parameters
-    state_dim = 14
+    state_dim = 20 # changed from 14 to 20 for dvrk  
     lr_backbone = 1e-5
     if policy_class == "ACT":
         enc_layers = 4
@@ -315,6 +327,7 @@ def main(args):
         print()
         exit()
 
+    ## TODO: change load_merged_data to load_data_dvrk
     train_dataloader, stats, _ = load_merged_data(
         dataset_dirs,
         num_episodes_list,

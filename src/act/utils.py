@@ -10,8 +10,9 @@ import json
 from torchvision import transforms
 import sys
 sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha
-from aloha_pro.aloha_scripts.utils import crop_resize
+from aloha_pro.aloha_scripts.utils import crop_resize, initialize_model_and_tokenizer, encode_text
 
+from dvrk_scripts.generic_dataset import *
 CROP_TOP = True  # hardcode
 FILTER_MISTAKES = True  # Filter out mistakes from the dataset even if not use_language
 
@@ -275,6 +276,39 @@ def get_norm_stats(dataset_dirs, num_episodes_list):
 
     return stats
 
+def load_data_dvrk(
+    dataset_dir,
+    num_episodes,
+    camera_names,
+    batch_size_train,
+    batch_size_val,
+    task_config):
+    
+    print(f'\nData from: {dataset_dir}\n')
+    # obtain train test split
+    train_ratio = 0.99
+    shuffled_indices = np.random.permutation(num_episodes)
+    train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
+    val_indices = shuffled_indices[int(train_ratio * num_episodes):]
+
+    # obtain normalization stats for qpos and action
+    # norm_stats = get_norm_stats(dataset_dir, num_episodes)
+    norm_stats = None
+    action_mode = task_config['action_mode'][0]
+    dataset_path = task_config['dataset_dir']
+    # if action_mode == 'SE3': # TODO update like hybrid dataset accordingly
+    #     train_dataset = EpisodicDatasetDvrkSE3(train_indices, dataset_path, camera_names, norm_stats)
+    #     val_dataset = EpisodicDatasetDvrkSE3(val_indices, dataset_path, camera_names, norm_stats)
+    # elif action_mode == 'hybrid':
+    #     train_dataset = EpisodicDatasetDvrkHybrid(train_indices, dataset_path, camera_names, norm_stats, task_config)
+    #     val_dataset = EpisodicDatasetDvrkHybrid(val_indices, dataset_path, camera_names, norm_stats, task_config)
+    train_dataset = EpisodicDatasetDvrkGeneric(train_indices, dataset_path, camera_names, norm_stats, task_config)
+    val_dataset = EpisodicDatasetDvrkGeneric(val_indices, dataset_path, camera_names, norm_stats, task_config)
+    
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=4, prefetch_factor=1)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=4, prefetch_factor=1)
+
+    return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
 
 ### Merge multiple datasets
 def load_merged_data(

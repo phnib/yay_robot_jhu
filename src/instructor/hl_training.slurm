@@ -26,7 +26,11 @@ conda activate /home/phanse14/.conda/envs/yay
 export PATH_TO_YAY_ROBOT="/home/phanse14/scr4_akriege1/chole/yay_robot_jhu"
 export PATH_TO_DATASET="/home/phanse14/scr4_akriege1/chole/chole_dataset"
 export YOUR_CKPT_PATH="$PATH_TO_YAY_ROBOT/model_ckpts"
-export WANDB_ENTITY="pascal-hansen" # TODO: Adjust to WandB cloud entity
+export WANDB_ENTITY="phansenjhu" # TODO: Adjust to WandB cloud entity # TODO: or rather "phansenjhu-johns-hopkins-university"
+export WANDB_API_KEY=$(cat ~/.wandb_api_key) # Read the API key from the secure file
+
+# Login to W&B
+wandb login --relogin $WANDB_API_KEY
 
 #Your job commands go here
 python train_daVinci.py \
@@ -35,11 +39,12 @@ python train_daVinci.py \
     --batch_size 128 \
     --num_epochs 1000 \
     --lr 1e-4 \
-    --history_skip_frame 1 \
+    --history_step_size 1 \
     --prediction_offset 0 \
     --history_len 0 \
     --seed 0 \
     --one_hot_flag \
+    --log_wandb \
     --validation_interval 1
 
 #Optionally, you can include cleanup commands here (e.g., after the job finishes) 
