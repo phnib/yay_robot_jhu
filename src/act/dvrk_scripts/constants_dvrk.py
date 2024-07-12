@@ -14,6 +14,8 @@ TASK_CONFIGS = {
     'base_chole_clipping_cutting':{
         'dataset_dir': DATA_DIR + "/base_chole_clipping_cutting/",
         'num_episodes': 200,
+        'tissue_samples_ids': [1, 4],
+        'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'action_mode': ['hybrid', 
                         {'max_': np.array([0.02375182, 0.02045474, 0.02108023, 1.        , 0.99563164,

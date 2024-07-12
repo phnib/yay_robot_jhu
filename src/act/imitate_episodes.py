@@ -1,12 +1,5 @@
 
 
-""" 
-TODO: 
-1. merge load_merged_data and load_data_dvrk
-2. merge task configs
-3. 
-
-"""
 import sys
 sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha
 import torch
@@ -32,7 +25,7 @@ from constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from sim_env import BOX_POSE
 
 ## TODO: merge load_merged_data and load_data_dvrk
-from utils import load_merged_data  # data functions
+from utils import load_merged_data, load_data_dvrk  # data functions
 from utils import sample_box_pose, sample_insertion_pose  # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict  # helper functions
 from policy import ACTPolicy, CNNMLPPolicy, DiffusionPolicy
@@ -164,6 +157,7 @@ def main(args):
     onscreen_render = args["onscreen_render"]
     task_name = args["task_name"]
     batch_size_train = args["batch_size"]
+    batch_size_val = args['batch_size']
     num_epochs = args["num_epochs"]
     log_wandb = args["log_wandb"]
     # Split the command by commas to get a list of commands
@@ -232,7 +226,8 @@ def main(args):
         num_episodes_list.append(task_config["num_episodes"])
         max_episode_len = max(max_episode_len, task_config["episode_len"])
         camera_names = task_config["camera_names"]
-
+        save_frequnecy = task_config['save_frequency']
+    
     max_skill_len = (
         args["max_skill_len"] if args["max_skill_len"] is not None else max_episode_len
     )
@@ -328,17 +323,35 @@ def main(args):
         exit()
 
     ## TODO: change load_merged_data to load_data_dvrk
-    train_dataloader, stats, _ = load_merged_data(
-        dataset_dirs,
-        num_episodes_list,
-        camera_names,
-        batch_size_train,
-        max_len=max_skill_len,
-        command_list=commands,
-        use_language=use_language,
-        language_encoder=language_encoder,
-        policy_class=policy_class,
-    )
+    # train_dataloader, stats, _ = load_merged_data(
+    #     dataset_dirs,
+    #     num_episodes_list,
+    #     camera_names,
+    #     batch_size_train,
+    #     max_len=max_skill_len,
+    #     command_list=commands,
+    #     use_language=use_language,
+    #     language_encoder=language_encoder,
+    #     policy_class=policy_class,
+    # )
+
+    # # save dataset stats
+    # if not os.path.isdir(ckpt_dir):
+    #     os.makedirs(ckpt_dir)
+    # stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
+    # with open(stats_path, "wb") as f:
+    #     pickle.dump(stats, f)
+
+    # train_bc(train_dataloader, config)
+
+    ### load dvrk data to train bc
+    train_dataloader, val_dataloader, stats, _ = load_data_dvrk(
+        dataset_dir,
+        num_episodes, 
+        camera_names, 
+        batch_size_train, 
+        batch_size_val, 
+        task_config)
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -347,7 +360,14 @@ def main(args):
     with open(stats_path, "wb") as f:
         pickle.dump(stats, f)
 
-    train_bc(train_dataloader, config)
+    # train_bc(train_dataloader, config)
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, save_frequnecy, config)
+    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+
+    # save best checkpoint
+    ckpt_path = os.path.join(ckpt_dir, f'policy_best.ckpt')
+    torch.save(best_state_dict, ckpt_path)
+    print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
 
 def make_policy(policy_class, policy_config):
@@ -896,7 +916,7 @@ def forward_pass(data, policy):
     return policy(qpos_data, image_data, action_data, is_pad, command_embedding)
 
 
-def train_bc(train_dataloader, config):
+def train_bc(train_dataloader, val_dataloader, save_frequnecy, config):
     num_epochs = config["num_epochs"]
     ckpt_dir = config["ckpt_dir"]
     seed = config["seed"]
@@ -957,6 +977,9 @@ def train_bc(train_dataloader, config):
     policy.cuda()
 
     train_history = []
+    validation_history = []
+    min_val_loss = np.inf
+    best_ckpt_info = None
     for epoch in tqdm(range(start_epoch, num_epochs)):
         print(f"\nEpoch {epoch}")
         # training
@@ -986,8 +1009,7 @@ def train_bc(train_dataloader, config):
             epoch_summary_train = {f"train/{k}": v for k, v in epoch_summary.items()}
             wandb.log(epoch_summary_train, step=epoch)
 
-        save_ckpt_every = 100
-        if epoch % save_ckpt_every == 0 and epoch > 0:
+        if epoch % save_frequnecy == 0 and epoch > 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
             torch.save(
                 {
@@ -1001,7 +1023,7 @@ def train_bc(train_dataloader, config):
 
             # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
             # except for the ones at multiples of 1000 epochs
-            prune_epoch = epoch - save_ckpt_every
+            prune_epoch = epoch - save_frequnecy
             if prune_epoch % 1000 != 0:
                 prune_path = os.path.join(
                     ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
