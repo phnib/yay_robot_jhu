@@ -213,17 +213,23 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
         for tissue_sample_id in tissue_sample_ids:
-            tissue_sample_name = f"tissue_{tissue_sample_id}"
+            tissue_sample_name = f"phantom_{tissue_sample_id}"
+            # tissue_sample_name = f"tissue_{tissue_sample_id}"
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = os.listdir(tissue_sample_dir_path)
+            # print(phases)
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             # print(tissue_sample_name,":\n")
             for phase_sample in phases:
                 demo_samples_path = os.path.join(tissue_sample_dir_path, phase_sample)
-                if os.path.isfile(demo_samples_path) or phase_sample == "Corrections":
+
+                if os.path.isfile(demo_samples_path):
                     continue  # Skip if the tissue sample path is not a directory
 
                 demo_samples = os.listdir(demo_samples_path)
+                for demo_sample in demo_samples:
+                    if demo_sample == "Corrections":
+                        demo_samples.remove(demo_sample)
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
 
                 # print(f"   {phase_sample}, {demo_samples}\n")
@@ -366,6 +372,8 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         """
         mean = self.task_config['action_mode'][1]['mean']
         std = self.task_config['action_mode'][1]['std']
+        # print("mean shape", mean.shape)
+        # print("std shape", std.shape)
         normalized = (diffs - mean) / std
 
         # replace w/ originals for 6D rot
@@ -507,7 +515,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         if self.use_language:
             phase_command, embedding = self.command_embeddings_dict[phase]
             command_embedding = torch.tensor(embedding).squeeze()
-            return image_data, qpos_data, action_data, is_pad, command_embedding, phase_command
+            return image_data, qpos_data, action_data, is_pad, command_embedding
         else:
             return image_data, qpos_data, action_data, is_pad
 """
@@ -516,57 +524,51 @@ Test the EpisodicDatasetDvrkGeneric class.
 # if __name__ == "__main__":
 #     seed = 42
 #     set_seed(seed)
-
 #     # Parameters for the test
-#     # path_to_dataset = os.getenv("PATH_TO_DATASET")
-#     path_to_dataset = "/home/jchen396/scr4_akriege1/chole/chole_dataset"
+#     path_to_dataset = os.getenv("PATH_TO_DATASET")
+#     # path_to_dataset = "/home/imerse/chole_ws/data"
 
 #     dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
-#     tissue_samples_ids = [1, 4]
+#     tissue_samples_ids = [6]
 #     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
 #     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-#     num_episodes = 200 # Number of randlomy generated stitched episodes
+#     num_episodes = 200 # Total number of episodes
+#     use_language_flag = True
 #     from dvrk_scripts.constants_dvrk import TASK_CONFIGS
 #     task_config = TASK_CONFIGS['base_chole_clipping_cutting']
-
+#     episode_ids = [i for i in range(num_episodes)]
 #     dataset = EpisodicDatasetDvrkGeneric(
+#                 episode_ids,
 #                 tissue_samples_ids,
 #                 dataset_dir,
 #                 camera_names,
 #                 camera_file_suffixes,
 #                 # num_episodes,
 #                 task_config,
-#                 # use_language=True
+#                 use_language=use_language_flag
 #                 )
 
 #     # Sample a random item from the dataset
 #     rdm_idx = np.random.randint(0, len(dataset))
-#     # print("idx:", rdm_idx)
-#     image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]
-#     # print("phase:", phase_command)
-#     # print(f"Image sequence shape: {image_data.shape}")
-#     # print(f"Language embedding shape: {command_embedding.shape}")
-#     # print(f"Command: {command}")
+#     print("idx:", rdm_idx)
+#     if use_language_flag:
+#         image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
+#         print(f"Image sequence shape: {image_data.shape}")
+#         print(f"Language embedding shape: {command_embedding.shape}")
+#     else:
+#         image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
+
 
 #         # Create a figure with subplots: one row per timestamp, one column per camera
 #     fig, axes = plt.subplots(1, len(camera_names), figsize=(15, 10))
-#     axes = axes[np.newaxis, :]
-
 #     for cam_idx, cam_name in enumerate(camera_names):
-#         img = image_data[cam_idx].permute(1, 2, 0).numpy()
-#         axes.imshow(img)
-#         axes.set_title(f"{cam_name}")
-#         axes.axis('off')  # Optionally turn off the axis
+#         img = image_data[cam_idx]  # Assuming image_data is a numpy array or compatible type
 
-#     # Set title to command
-#     fig.suptitle("test")
-#     plt.tight_layout()
-#     path_to_yay_robot = "/home/jchen396/scr4_akriege1/chole/yay_robot_jhu"
-#     example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset")
-#     if not os.path.exists(example_dataset_plots_folder_path):
-#         os.makedirs(example_dataset_plots_folder_path)
-#     file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{rdm_idx}.png")
-#     file_path = os.path.join(example_dataset_plots_folder_path, file_name)
-#     plt.savefig(file_path)
-#     print(f"Saved {file_name}.")
-#     plt.close(fig)  # Close the figure to free memory
+#         # Check and possibly transpose the shape if needed
+#         if img.shape[0] == 3 and len(img.shape) == 3:
+#             img = np.transpose(img, (1, 2, 0))  # Transpose to (height, width, channels)
+
+#         axes[cam_idx].imshow(img)
+#         axes[cam_idx].set_title(f"{cam_name}")
+#         axes[cam_idx].axis('off')  # Optionally turn off the axis
+#     plt.show()

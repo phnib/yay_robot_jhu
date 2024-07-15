@@ -41,7 +41,7 @@ from aloha_pro.aloha_scripts.utils import (
     memory_monitor,
     save_trajectory,
 )
-from instructor.train import build_instructor
+# from instructor.train import build_instructor
 
 CROP_TOP = True  # for aloha pro, whose top camera is high
 CKPT = 0  # 0 for policy_last, otherwise put the ckpt number here
@@ -346,12 +346,13 @@ def main(args):
 
     ### load dvrk data to train bc
     train_dataloader, val_dataloader, stats, _ = load_data_dvrk(
-        dataset_dir,
-        num_episodes, 
+        dataset_dirs[0],
+        num_episodes_list[0], 
         camera_names, 
         batch_size_train, 
         batch_size_val, 
-        task_config)
+        task_config,
+        use_language=use_language)
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):

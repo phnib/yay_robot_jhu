@@ -9,10 +9,13 @@ import cv2
 import json
 from torchvision import transforms
 import sys
-sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha
+path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
+
+if path_to_yay_robot:
+    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
 from aloha_pro.aloha_scripts.utils import crop_resize
 
-from dvrk_scripts.generic_dataset import *
+from generic_dataset import *
 CROP_TOP = True  # hardcode
 FILTER_MISTAKES = True  # Filter out mistakes from the dataset even if not use_language
 
@@ -305,39 +308,34 @@ def load_data_dvrk(
     # elif action_mode == 'hybrid':
     #     train_dataset = EpisodicDatasetDvrkHybrid(train_indices, dataset_path, camera_names, norm_stats, task_config)
     #     val_dataset = EpisodicDatasetDvrkHybrid(val_indices, dataset_path, camera_names, norm_stats, task_config)
-    train_datasets = [
-        EpisodicDataset(
+    train_datasets = EpisodicDatasetDvrkGeneric(
             train_indices,
-            tissue_samples_id,
+            tissue_samples_ids,
             dataset_dir,
             camera_names,
             camera_file_suffixes, 
             task_config,
             use_language=use_language,
         )
-        for tissue_samples_id in tissue_samples_ids
-    ]
-    val_datasets = [
-        EpisodicDataset(
+    
+    val_datasets = EpisodicDatasetDvrkGeneric(
             val_indices,
-            tissue_samples_id,
+            tissue_samples_ids,
             dataset_dir,
             camera_names,
             camera_file_suffixes, 
             task_config,
             use_language=use_language,
         )
-        for tissue_samples_id in tissue_samples_ids
-    ]
-    merged_train_dataset = ConcatDataset(train_datasets)
-    merged_val_dataset = ConcatDataset(val_datasets)
+    # merged_train_dataset = ConcatDataset(train_datasets)
+    # merged_val_dataset = ConcatDataset(val_datasets)
     # train_dataset = EpisodicDatasetDvrkGeneric(train_indices, dataset_path, camera_names, norm_stats, task_config)
     # val_dataset = EpisodicDatasetDvrkGeneric(val_indices, dataset_path, camera_names, norm_stats, task_config)
     
-    train_dataloader = DataLoader(merged_train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=4, prefetch_factor=1)
-    val_dataloader = DataLoader(merged_val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=4, prefetch_factor=1)
+    train_dataloader = DataLoader(train_datasets, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=4, prefetch_factor=1)
+    val_dataloader = DataLoader(val_datasets, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=4, prefetch_factor=1)
 
-    return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
+    return train_dataloader, val_dataloader, norm_stats, train_datasets.is_sim
 
 ### Merge multiple datasets
 def load_merged_data(
