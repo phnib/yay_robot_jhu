@@ -3,6 +3,7 @@ import os
 import json
 import sys
 from collections import defaultdict
+import math
 
 import yaml
 import cv2
@@ -12,7 +13,7 @@ from torchvision import transforms
 from torchvision.transforms import v2
 from torch.utils.data import DataLoader, ConcatDataset
 
-# import aloha
+# import src code
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 if path_to_yay_robot:
     sys.path.append(os.path.join(path_to_yay_robot, 'src'))
@@ -45,8 +46,8 @@ def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test
         tissue_names.remove("tissue_1") # Remove tissue_1 from the dataset as not complete
             
     num_tissue_samples = len(tissue_names)
-    num_train = int(train_ratio * num_tissue_samples)
-    num_val = int(val_ratio * num_tissue_samples)
+    num_train = math.ceil(train_ratio * num_tissue_samples) 
+    num_val = int(val_ratio * num_tissue_samples) 
 
     # Generate a list of indices and shuffle them
     all_indices = list(range(0, num_tissue_samples))
@@ -69,6 +70,23 @@ def extract_candidate_embeddings_and_commands(command_embeddings_dict):
     
     return torch.stack(candidate_embeddings), candidate_texts
 
+def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phase_offset, after_phase_offset):
+    # Load the start and end indices for the current demo as the valid range of the demo
+    demo_num_frames_total = len(os.listdir(os.path.join(demo_folder_path, camera_names[0])))
+    start, end = 0, demo_num_frames_total - 1
+    indices_curated_file_path = os.path.join(demo_folder_path, "indices_curated.json")
+    if os.path.exists(indices_curated_file_path):
+        with open(indices_curated_file_path, 'r') as indices_curated_file:
+            try:
+                indices_curated_dict = json.load(indices_curated_file)
+            except json.JSONDecodeError:
+                print(f"Error reading indices_curated.json for {demo_folder_path}. Continue with max recording range.")
+            if "start" in indices_curated_dict:
+                start = max(indices_curated_dict['start'] - before_phase_offset, start)
+            if "end" in indices_curated_dict:
+                end = min(indices_curated_dict['end'] + after_phase_offset, end)
+    return start, end
+
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -82,6 +100,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         history_step_size=30,
         num_episodes=200,
         framewise_transforms=None,
+        center_crop_flag=False,
     ):
         super().__init__()
         
@@ -97,13 +116,13 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.history_step_size = history_step_size
         self.num_episodes = num_episodes
         self.framewise_transforms = framewise_transforms
+        self.center_crop_flag = center_crop_flag
         
         # Set the before_phase_offset and after_phase_offset
-        config_file_path = os.path.join(path_to_yay_robot, "config", "config.yaml")
-        with open(config_file_path, 'r') as config_file:
-            config_dict = yaml.safe_load(config_file)
-            self.before_phase_offset = config_dict["data"]["before_phase_offset"]
-            self.after_phase_offset = config_dict["data"]["after_phase_offset"]
+        dataset_name = os.path.basename(dataset_dir)
+        dataset_config = DATASET_CONFIGS[dataset_name]
+        self.before_phase_offset = dataset_config["before_phase_offset"]
+        self.after_phase_offset = dataset_config["after_phase_offset"]
  
         # Initialize the phase_len_dict with defaultdict
         phase_len_dict = defaultdict(list)
@@ -121,9 +140,8 @@ class SequenceDataset(torch.utils.data.Dataset):
                 demo_samples = [demo_sample for demo_sample in files_in_phase_folder if demo_sample[8] == "-"]
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
                 # Add the length of the phase for current demo to phase_len_dict
-                # TODO: Check if this works
                 for demo_sample in demo_samples:
-                    start, end = self.get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample))
+                    start, end = get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample), camera_names, self.before_phase_offset, self.after_phase_offset)
                     demo_num_frames_valid = end - start + 1
                     phase_len_dict[phase_sample].append(demo_num_frames_valid)
             
@@ -140,23 +158,6 @@ class SequenceDataset(torch.utils.data.Dataset):
     def __len__(self):
         # Here this means the number of randomly generated stitched episodes
         return self.num_episodes
-
-    def get_valid_demo_start_end_indices(self, demo_folder_path):
-        # Load the start and end indices for the current demo as the valid range of the demo
-        demo_num_frames_total = len(os.listdir(os.path.join(demo_folder_path, self.camera_names[0])))
-        start, end = 0, demo_num_frames_total - 1
-        indices_curated_file_path = os.path.join(demo_folder_path, "indices_curated.json")
-        if os.path.exists(indices_curated_file_path):
-            with open(indices_curated_file_path, 'r') as indices_curated_file:
-                try:
-                    indices_curated_dict = json.load(indices_curated_file)
-                except json.JSONDecodeError:
-                    print(f"Error reading indices_curated.json for {demo_folder_path}. Continue with max recording range.")
-                if "start" in indices_curated_dict:
-                    start = max(indices_curated_dict['start'] - self.before_phase_offset, start)
-                if "end" in indices_curated_dict:
-                    end = min(indices_curated_dict['end'] + self.after_phase_offset, end)
-        return start, end
 
     def compute_dataset_statistics(self, phase_len_dict):
         # Compute the statistics of the dataset
@@ -211,7 +212,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             
             # Load the start and end indices for the current demo as the valid range of the demo
             selected_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
-            start, end = self.get_valid_demo_start_end_indices(selected_demo_folder_path)
+            start, end = get_valid_demo_start_end_indices(selected_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)
             selected_phase_demo_dict[phase]["demo_rel_start_idx"] = start
             
             # Count the number of valid frames for the current demo
@@ -247,9 +248,12 @@ class SequenceDataset(torch.utils.data.Dataset):
                 cam_folder = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, cam_name)
                 frame_path = os.path.join(cam_folder, f"frame{str(ts_demo_frame_idx).zfill(6)}{cam_file_suffix}")
                 img = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
-                # TODO: Decide for either normal resize or to do a center crop and resize?
-                # img_resized_224 = transforms.Resize((224, 224))(img)
-                img_resized_224 = center_crop_resize(img, 224)
+                # Resize the image to 224x224 
+                if self.center_crop_flag:
+                    img_resized_224 = center_crop_resize(img, 224)
+                else:
+                    img_resized_224 = transforms.Resize((224, 224))(img)
+                
                 image_dict[cam_name] = img_resized_224
                 
             all_cam_images = [
@@ -281,6 +285,7 @@ def load_merged_data(
     test_only=False,
     framewise_transforms=None,
     dagger_ratio=None,
+    center_crop_flag=False,
 ):
     # TODO: Add later distributed sampler for multi GPU training
     
@@ -319,6 +324,7 @@ def load_merged_data(
     ds_metadata_dict["framewise_transforms"] = framewise_transforms
     ds_metadata_dict["dataset_dirs"] = dataset_dirs
     ds_metadata_dict["num_episodes_list"] = num_episodes_list    
+    ds_metadata_dict["center_crop_flag"] = center_crop_flag
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
@@ -365,7 +371,8 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms)
+                        framewise_transforms,
+                        center_crop_flag)
             )
             
             # Get dataset statistics
@@ -388,7 +395,8 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms)
+                        framewise_transforms,
+                        center_crop_flag)
             )
             val_datasets.append(SequenceDataset(
                         "val",
@@ -400,7 +408,8 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms)
+                        framewise_transforms,
+                        center_crop_flag)
             )
             
             # Get dataset statistics
@@ -433,7 +442,8 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms)
+                        framewise_transforms,
+                        center_crop_flag)
             )
             
             # Get dataset statistics
