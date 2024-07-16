@@ -5,7 +5,7 @@ import json
 import cv2
 import pandas as pd
 
-def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, tissue_idx=1, after_phase_offset = 5, before_phase_offset = 5):
+def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, tissue_idx=1, after_phase_offset = 5, before_phase_offset = 5, phase_text_flag = True, also_right_camera_flag=False):
    
    # Create the parent directory if it does not exist
     if not output_path.exists():
@@ -78,15 +78,17 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
             for frame_idx in range(start, end + 1):
                 images = []
                 widths = []
-                # Get image for both wrist cameras and left image from stereo camera 
-                for sub_folder, suffix in [('endo_psm2', '_psm2.jpg'), 
-                                           ('left_img_dir', '_left.jpg'), 
-                                           ('endo_psm1', '_psm1.jpg')]:
+                # Get image for both wrist cameras and left (and maybe right) image from stereo camera 
+                if not also_right_camera_flag:
+                    subfolder_file_suffix_mapping = [('endo_psm2', '_psm2.jpg'), ('left_img_dir', '_left.jpg'), ('endo_psm1', '_psm1.jpg')]
+                else:
+                    subfolder_file_suffix_mapping = [('endo_psm2', '_psm2.jpg'), ('left_img_dir', '_left.jpg'), ('right_img_dir', '_right.jpg'), ('endo_psm1', '_psm1.jpg')]
+                for sub_folder, suffix in subfolder_file_suffix_mapping:
                     img_path = selected_date_folder_path / sub_folder / f"frame{str(frame_idx).zfill(6)}{suffix}"
                     if img_path.exists():
                         img = cv2.imread(str(img_path))
                         if img is not None:
-                            if sub_folder == 'left_img_dir':
+                            if sub_folder == 'left_img_dir' or sub_folder == 'right_img_dir':
                                 height = 480
                                 width = int(img.shape[1] * (height / img.shape[0]))
                                 img = cv2.resize(img, (width, height))
@@ -98,10 +100,11 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
                 # Concatenate the images
                 final_image = cv2.hconcat(images)
                 
-                # Calculate text position to center over the 'left_img_dir' image
-                text = f"Folder: {phase_folder_path.stem}"
-                text_position_x = widths[0] + (widths[1] // 2) - 325  # Center text on the second image
-                cv2.putText(final_image, text, (text_position_x, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                if phase_text_flag:
+                    # Calculate text position to center over the 'left_img_dir' image
+                    text = f"Folder: {phase_folder_path.stem}"
+                    text_position_x = widths[0] + (widths[1] // 2) - 325  # Center text on the second image
+                    cv2.putText(final_image, text, (text_position_x, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
                 # Write the final image to the video
                 if out is None:
@@ -119,16 +122,20 @@ if __name__ == "__main__":
     from datetime import datetime
     import os
 
+    # Define the parameters for the video generation
+    num_videos = 1
+    num_phases = 17
+    tissue = 4  # tissue_1 has no continuous phases, so we are using >= tissue_4
+    before_phase_offset, after_phase_offset = 10, 10
+    phase_text_flag = False
+    also_right_camera_flag = False
+    
     # Set the base and output path
     chole_scripts_path = Path(__file__).parent
     base_path =  os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    output_path = Path(os.path.join(chole_scripts_path, "GeneratedStitchedEpisodes", timestamp))
-
+    output_path = Path(os.path.join(chole_scripts_path, "GeneratedStitchedEpisodes", f"{tissue=}_{timestamp}"))
+    
     # Generate the combined video
-    num_videos = 5
-    num_phases = 17
-    tissue_idx = 5  # tissue_1 has no continuous phases, so we are using >= tissue_4
-    before_phase_offset, after_phase_offset = 0, 0 # 5, 15
-    create_combined_video(base_path, output_path, num_videos, num_phases, tissue_idx, after_phase_offset, before_phase_offset)
+    create_combined_video(base_path, output_path, num_videos, num_phases, tissue, after_phase_offset, before_phase_offset, phase_text_flag, also_right_camera_flag)
 

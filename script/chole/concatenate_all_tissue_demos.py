@@ -7,7 +7,7 @@ import pandas as pd
 def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset = 5, before_phase_offset = 5):
     
     # Define the final video path for each run
-    final_video_path = Path(output_path) / f"all_demos_combined_{tissue_idx}_{timestamp}.avi"
+    final_video_path = Path(output_path) / f"all_demos_combined_tissue_{tissue_idx}_{timestamp}.avi"
     
     # Create the parent directory if it does not exist
     if not final_video_path.parent.exists():
@@ -30,7 +30,8 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
             print(f"No demo folders found for {phase_folder_path}")
             continue
 
-        for selected_date_folder_path in date_folders:
+        date_folder_sorted = sorted(date_folders, key=lambda p: p.name)
+        for selected_date_folder_path in date_folder_sorted:
             # Get number of frames from the kinematics csv file
             kinematics_csv_path = selected_date_folder_path / 'ee_csv.csv'
             if not kinematics_csv_path.exists():
@@ -83,7 +84,7 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
                 final_image = cv2.hconcat(images)
                 
                 # Calculate text position to center over the 'left_img_dir' image
-                text_position_x = widths[0] + (widths[1] // 2) - 500  # Center text on the second image
+                text_position_x = 0  # Center text on the second image
                 text = f"Phase: {phase_folder_path.stem}, Demo: {selected_date_folder_path.stem}"
                 cv2.putText(final_image, text, (text_position_x, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
@@ -109,6 +110,6 @@ if __name__ == "__main__":
     output_path = Path(os.path.join(chole_scripts_path, "AllDemosVideos"))
 
     # Generate the combined video
-    tissue_idx = 1
-    before_phase_offset, after_phase_offset = 0, 0 # 5, 5
+    tissue_idx = 8
+    before_phase_offset, after_phase_offset = 10, 10
     create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset, before_phase_offset)
