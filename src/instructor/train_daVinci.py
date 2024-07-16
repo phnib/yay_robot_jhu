@@ -93,7 +93,7 @@ def evaluate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
-def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 1, log_wandb_flag=True):
+def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 10, plot_images_flag=True, log_wandb_flag=True):
 
     model.eval()
 
@@ -101,12 +101,15 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     total_correct = 0
     total_predictions = 0
 
-    all_predicted_embeddings = []
-    all_gt_embeddings = []
     all_commands_gt = []
     all_decoded_texts = []
 
-    incorrect_img_cnt = correct_img_cnt = 0
+    if not one_hot_flag:
+        all_predicted_embeddings = []
+        all_gt_embeddings = []
+
+    if plot_images_flag:
+        incorrect_img_cnt = correct_img_cnt = 0
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             images, command_embedding_gt, command_gt = batch
@@ -120,23 +123,26 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
 
-            all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
-            all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
+            if not one_hot_flag:
+                all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
+                all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
-            for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):                
-                # Save incorrect prediction
-                if pred != gt and incorrect_img_cnt < max_num_images:
-                    incorrect_img_cnt += 1
-                    save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
-                    log_combined_image(images[img_idx], gt, pred, save_path)
-                    if args.log_wandb:
-                        wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
-                # Save correct prediction
-                if pred == gt and correct_img_cnt < max_num_images:
-                    save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
-                    log_combined_image(images[img_idx], gt, pred, save_path)
-                    if args.log_wandb:
-                        wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+            for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):    
+                if plot_images_flag:            
+                    # Save incorrect prediction
+                    if pred != gt and incorrect_img_cnt < max_num_images:
+                        incorrect_img_cnt += 1
+                        save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
+                        log_combined_image(images[img_idx], gt, pred, save_path)
+                        if args.log_wandb:
+                            wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+                    # Save correct prediction
+                    if pred == gt and correct_img_cnt < max_num_images:
+                        correct_img_cnt += 1
+                        save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
+                        log_combined_image(images[img_idx], gt, pred, save_path)
+                        if args.log_wandb:
+                            wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
 
                 total_correct += int(pred == gt)
                 total_predictions += 1
@@ -202,7 +208,10 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
     draw = ImageDraw.Draw(canvas)
     font = ImageFont.load_default(size=38)
     draw.text((10, 10), "GT: " + gt_text, font=font, fill="white")
-    draw.text((10, 50), "Pred: " + pred_text, font=font, fill="red")
+    if gt_text != pred_text:
+        draw.text((10, 50), "Pred: " + pred_text, font=font, fill="red")
+    else:
+        draw.text((10, 50), "Pred: " + pred_text, font=font, fill="green")
 
     canvas.save(save_path)
 
@@ -413,6 +422,8 @@ if __name__ == "__main__":
     parser.add_argument('--early_stopping_interval', action='store', type=int, help='early_stopping_interval', default=None)
     parser.add_argument('--load_best_ckpt_flag', action='store_true', help='Use the best checkpoint based on the validation loss if continue training on available checkpoint')
     parser.add_argument('--center_crop_flag', action='store_true', help='Center crop the images during preprocessing, preventing unnatural rescaling, but potentially cutting off important information')
+    parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
+    parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=10)
 
     args = parser.parse_args()
 
@@ -579,7 +590,7 @@ if __name__ == "__main__":
             
             # Test the model and log success rate every 200 epochs
             if epoch % args.validation_interval == 0 and (epoch > 0 or args.dagger_ratio is not None):
-                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, log_wandb_flag=args.log_wandb)
+                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, plot_images_flag=args.plot_val_images_flag, log_wandb_flag=args.log_wandb)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
 
