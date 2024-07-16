@@ -11,3 +11,5 @@ slurm_jobs_output
 
 AllDemosVideos
 GeneratedStitchedEpisodes
+
+ckpt_dir*
