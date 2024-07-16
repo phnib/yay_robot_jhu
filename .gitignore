@@ -5,7 +5,7 @@ model_ckpts
 
 examples_plots
 
-*/.vscode
+.vscode
 
 slurm_jobs_output
 
