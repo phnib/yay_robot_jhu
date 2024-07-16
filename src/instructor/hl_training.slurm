@@ -6,7 +6,7 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=1           # Number of tasks per node
 #SBATCH --cpus-per-task=8             # Number of CPU cores per task
-#SBATCH --time=0:01:00                # Maximum runtime (D-HH:MM:SS) # TODO: Adjust the time
+#SBATCH --time=0:03:00                # Maximum runtime (D-HH:MM:SS) # TODO: Adjust the time
 #SBATCH --mail-type=END               # Send email at job completion
 #SBATCH --mail-user=phanse14@jh.edu    # Email address for notifications
 #SBATCH -A akriege1_gpu                 # PI-userid_gpu
@@ -17,20 +17,26 @@ module purge
 
 #Load necessary modules (if needed)
 module load anaconda
-module load namd/2.14-cuda-smp # TODO: Does this line has an effect?
+# module load namd/2.14-cuda-smp # TODO: Does this line has an effect?
 
 # Activate the virtual environment
 conda activate /home/phanse14/.conda/envs/yay
+
+# Debug infos
+which python
+echo "This is cuda devices" 
+echo $CUDA_VISIBLE_DEVICES
+echo "end"
 
 # Set environment variables
 export PATH_TO_YAY_ROBOT="/home/phanse14/scr4_akriege1/chole/yay_robot_jhu"
 export PATH_TO_DATASET="/home/phanse14/scr4_akriege1/chole/chole_dataset"
 export YOUR_CKPT_PATH="$PATH_TO_YAY_ROBOT/model_ckpts"
-export WANDB_ENTITY="phansenjhu" # TODO: Adjust to WandB cloud entity # TODO: or rather "phansenjhu-johns-hopkins-university"
-export WANDB_API_KEY=$(cat ~/.wandb_api_key) # Read the API key from the secure file
+# export WANDB_ENTITY="wandb_entity" # TODO: Adjust to WandB cloud entity
+# export WANDB_API_KEY=$(cat ~/.wandb_api_key) # Read the API key from the secure file
 
 # Login to W&B
-wandb login --relogin $WANDB_API_KEY
+# wandb login --relogin $WANDB_API_KEY
 
 #Your job commands go here
 python train_daVinci.py \
@@ -44,8 +50,8 @@ python train_daVinci.py \
     --history_len 0 \
     --seed 0 \
     --one_hot_flag \
-    --log_wandb \
     --validation_interval 1
+    # --log_wandb \
 
 #Optionally, you can include cleanup commands here (e.g., after the job finishes) 
 #For example:
