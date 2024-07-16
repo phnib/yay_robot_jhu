@@ -2,7 +2,7 @@
 Example usage:
 
 python src/instructor/train_daVinci.py \
-    --task_name debugging \
+    --dataset_names debugging \
     --ckpt_dir $YOUR_CKPT_PATH/debugging_ckpt \
     --batch_size 64 \
     --num_epochs 15000 \
@@ -32,7 +32,7 @@ from sklearn.metrics import confusion_matrix
 import seaborn as sns
 from sklearn.metrics import f1_score
 
-# import aloha # TODO: Rather do this via absolute imports
+# import aloha 
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 if path_to_yay_robot:
     sys.path.append(os.path.join(path_to_yay_robot, 'src'))
@@ -93,7 +93,7 @@ def evaluate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
-def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 5):
+def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 1, log_wandb_flag=True):
 
     model.eval()
 
@@ -106,6 +106,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     all_commands_gt = []
     all_decoded_texts = []
 
+    incorrect_img_cnt = correct_img_cnt = 0
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             images, command_embedding_gt, command_gt = batch
@@ -122,7 +123,6 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
             all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
             all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
-            incorrect_img_cnt = correct_img_cnt = 0
             for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):                
                 # Save incorrect prediction
                 if pred != gt and incorrect_img_cnt < max_num_images:
@@ -155,7 +155,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     if not os.path.exists(conf_matrix_folder_path):
         os.makedirs(conf_matrix_folder_path, exist_ok=True)
     save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_{current_epoch}.png")
-    log_confusion_matrix(all_commands_gt, all_decoded_texts, split_name, candidate_texts, current_epoch, save_path)
+    log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag)
 
     # Compute the success rate -> accurarcy
     accurarcy_curr_epoch = total_correct / total_predictions
@@ -207,7 +207,7 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
     canvas.save(save_path)
 
 
-def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None, save_path=None):
+def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, save_path=None, log_wandb_flag=True):
     """
     Compute the confusion matrix for each criteria.
     
@@ -256,8 +256,11 @@ def log_confusion_matrix(y_true, y_pred, split_name, classes, epoch=None, save_p
         fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch})")
     else:
         fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix")
-    if args.log_wandb:
-        wandb.log({f"{split_name=}_confusion_matrix": fig})
+    if log_wandb_flag:
+        if split_name is None:
+            wandb.log({"confusion_matrix": fig})
+        else:
+            wandb.log({f"{split_name=}_confusion_matrix": fig})
     
     # Save with the epoch in the filename
     plt.savefig(save_path)
@@ -321,7 +324,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 # -----------------------------
 
-def build_instructor(history_len, candidate_embeddings, candidate_texts, device, one_hot_flag=False):
+def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, center_crop_flag):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -330,10 +333,14 @@ def build_instructor(history_len, candidate_embeddings, candidate_texts, device,
     model = Instructor(
         device=device,
         history_len=history_len,
+        history_step_size=history_step_size,
+        prediction_offset=prediction_offset,
         candidate_embeddings=candidate_embeddings,
         candidate_texts=candidate_texts,
         command_to_index=command_to_index,
         one_hot_flag=one_hot_flag,
+        camera_names=camera_names,
+        center_crop_flag=center_crop_flag,
     ).to(device)
     return model
 
@@ -357,7 +364,8 @@ def best_checkpoint(ckpt_dir):
         return None, None
 
     latest_best_idx = max(epoch_numbers)
-    return os.path.join(ckpt_dir, f"best_val_loss_epoch={latest_best_idx}.ckpt"), latest_best_idx
+    next_idx = latest_best_idx + 1
+    return os.path.join(ckpt_dir, f"best_val_loss_epoch={latest_best_idx}.ckpt"), next_idx
 
 def latest_checkpoint(ckpt_dir):
     """
@@ -380,12 +388,12 @@ def latest_checkpoint(ckpt_dir):
 
 if __name__ == "__main__":
     from instructor.utils import set_seed
-    from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get task parameters
+    from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get dataset parameters
     
     threading.Thread(target=memory_monitor, daemon=True).start()
 
     parser = argparse.ArgumentParser(description="Train and evaluate command prediction model using CLIP.")
-    parser.add_argument('--task_name', nargs='+', type=str, help='List of task names', required=True)
+    parser.add_argument('--dataset_names', nargs='+', type=str, help='List of dataset names', required=True)
     parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
     parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
@@ -404,6 +412,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_ckpt_interval', action='store', type=int, help='save_ckpt_interval', default=100)
     parser.add_argument('--early_stopping_interval', action='store', type=int, help='early_stopping_interval', default=None)
     parser.add_argument('--load_best_ckpt_flag', action='store_true', help='Use the best checkpoint based on the validation loss if continue training on available checkpoint')
+    parser.add_argument('--center_crop_flag', action='store_true', help='Center crop the images during preprocessing, preventing unnatural rescaling, but potentially cutting off important information')
 
     args = parser.parse_args()
 
@@ -417,14 +426,12 @@ if __name__ == "__main__":
     dataset_dirs = []
     num_episodes_list = []
 
-    for task in args.task_name:
-        task_config = DATASET_CONFIGS[task]
-        dataset_dirs.append(task_config["dataset_dir"])
-        num_episodes_list.append(task_config["num_episodes"])
-        camera_names = task_config["camera_names"]
-        camera_file_suffixes = task_config["camera_file_suffixes"]
-    ckpt_dir = args.ckpt_dir
-    dagger_ratio = args.dagger_ratio 
+    for dataset in args.dataset_names:
+        dataset_config = DATASET_CONFIGS[dataset]
+        dataset_dirs.append(dataset_config["dataset_dir"])
+        num_episodes_list.append(dataset_config["num_episodes"])
+        camera_names = dataset_config["camera_names"]
+        camera_file_suffixes = dataset_config["camera_file_suffixes"] 
 
     # ---------------------- Define dataloaders and model ----------------------
 
@@ -443,7 +450,7 @@ if __name__ == "__main__":
     framewise_transforms = transforms.Compose(framewise_transforms)
 
     # Data loading
-    if dagger_ratio is not None and not args.test_only_flag:
+    if args.dagger_ratio is not None and not args.test_only_flag:
         train_dataloader, ds_metadata_dict = load_merged_data(
             dataset_dirs=dataset_dirs,
             num_episodes_list=num_episodes_list,
@@ -456,7 +463,8 @@ if __name__ == "__main__":
             history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
             framewise_transforms=framewise_transforms,
-            dagger_ratio=dagger_ratio,
+            dagger_ratio=args.dagger_ratio,
+            center_crop_flag=args.center_crop_flag,
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -471,7 +479,8 @@ if __name__ == "__main__":
             history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
             framewise_transforms=framewise_transforms,
-            dagger_ratio=dagger_ratio,
+            dagger_ratio=args.dagger_ratio,
+            center_crop_flag=args.center_crop_flag,
         )
     else:
         test_dataloader, ds_metadata_dict = load_merged_data(
@@ -485,7 +494,8 @@ if __name__ == "__main__":
             history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
             framewise_transforms=framewise_transforms,
-            dagger_ratio=dagger_ratio,
+            dagger_ratio=args.dagger_ratio,
+            center_crop_flag=args.center_crop_flag,
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -495,8 +505,8 @@ if __name__ == "__main__":
     # WandB initialization
     if args.log_wandb:
         wandb_entity = os.getenv("WANDB_ENTITY")
-        run_name = "instructor." + ckpt_dir.split("/")[-1] + f".{args.seed}"
-        wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
+        run_name = "instructor." + args.ckpt_dir.split("/")[-1] + f".{args.seed}"
+        wandb_run_id_path = os.path.join(args.ckpt_dir, "wandb_run_id.txt")
         # check if it exists
         if os.path.exists(wandb_run_id_path): 
             with open(wandb_run_id_path, "r") as f:
@@ -521,41 +531,42 @@ if __name__ == "__main__":
     # Build the model
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]    
-    model = build_instructor(args.history_len, candidate_embeddings, candidate_texts, device, args.one_hot_flag)
+    model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = torch.nn.CrossEntropyLoss()
 
     # Load the most recent checkpoint if available
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir)
-        latest_idx = 0
+    if not os.path.isdir(args.ckpt_dir):
+        os.makedirs(args.ckpt_dir)
+        next_idx = 0
     else:
         # Load the most recent checkpoint if available
         if args.load_best_ckpt_flag:
-            latest_ckpt, latest_idx = best_checkpoint(ckpt_dir)
+            latest_ckpt, next_idx = best_checkpoint(args.ckpt_dir)
         else:
-            latest_ckpt, latest_idx = latest_checkpoint(args.ckpt_dir)
+            latest_ckpt, next_idx = latest_checkpoint(args.ckpt_dir)
         if latest_ckpt:
             print(f"\nLoading checkpoint: {latest_ckpt}")
-            model.load_state_dict(torch.load(latest_ckpt, map_location=device))
+            model.load_state_dict(torch.load(latest_ckpt, map_location=device).state_dict())
         else:
             print("\nNo checkpoint found.")
-            latest_idx = 0
+            next_idx = 0
 
     # ---------------------- Training loop ----------------------
 
     # Create a directory to save predictions for the current run
-    predictions_dir = os.path.join(ckpt_dir, "predictions")
+    predictions_dir = os.path.join(args.ckpt_dir, "predictions")
     if not os.path.exists(predictions_dir):
         os.makedirs(predictions_dir)
 
     # Test the model using the latest checkpoint - don't train
     if args.test_only_flag:
-        test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, ckpt_dir)
+        latest_idx = next_idx-1
+        test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, args.ckpt_dir, log_wandb_flag=args.log_wandb)
         exit()
 
     # Training loop
-    pbar_epochs = tqdm(range(latest_idx, args.num_epochs), desc="Epochs")
+    pbar_epochs = tqdm(range(next_idx, args.num_epochs), desc="Epochs")
     best_val_loss = float("inf")
     first_iteration_flag = True
     for epoch in pbar_epochs:
@@ -563,18 +574,18 @@ if __name__ == "__main__":
             wandb.log({"Epoch": epoch})
         
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
-        if dagger_ratio is None: 
+        if args.dagger_ratio is None: 
             val_loss = evaluate(model, val_dataloader, criterion, device)
             
             # Test the model and log success rate every 200 epochs
-            if epoch % args.validation_interval == 0 and (epoch > 0 or dagger_ratio is not None):
-                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, ckpt_dir)
+            if epoch % args.validation_interval == 0 and (epoch > 0 or args.dagger_ratio is not None):
+                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, log_wandb_flag=args.log_wandb)
 
-        pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if dagger_ratio is None else None})
+        pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
 
         if args.log_wandb:
             wandb.log({"Epoch Train Loss": train_loss})
-            if dagger_ratio is None:
+            if args.dagger_ratio is None:
                 wandb.log({"Epoch Eval Loss": val_loss})
         else:
             print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
@@ -583,29 +594,29 @@ if __name__ == "__main__":
 
         # Save a checkpoint every 100 epochs
         if epoch % args.save_ckpt_interval == 0 and epoch > 0:
-            ckpt_path = os.path.join(ckpt_dir, f"epoch_{epoch}.ckpt")
-            torch.save(model.state_dict(), ckpt_path)
+            ckpt_path = os.path.join(args.ckpt_dir, f"epoch_{epoch}.ckpt")
+            torch.save(model, ckpt_path)
 
             # Pruning: this removes the checkpoint save_ckpt_interval epochs behind the current one
             # except for the ones at multiples of prune_freq epochs
             prune_freq = args.save_ckpt_interval * 3
             prune_epoch = epoch - args.save_ckpt_interval
             if prune_epoch % prune_freq != 0:
-                prune_path = os.path.join(ckpt_dir, f"epoch_{prune_epoch}.ckpt")
+                prune_path = os.path.join(args.ckpt_dir, f"epoch_{prune_epoch}.ckpt")
                 if os.path.exists(prune_path):
                     os.remove(prune_path)
                     
         # Save always the best performing model based on the validation loss
-        if dagger_ratio is None and val_loss < best_val_loss:
+        if args.dagger_ratio is None and val_loss < best_val_loss:
             best_val_loss = val_loss
             if not first_iteration_flag:
                 prev_best_val_epoch = best_val_epoch
             best_val_epoch = epoch
-            best_ckpt_path = os.path.join(ckpt_dir, f"best_val_loss_{epoch=}.ckpt")
-            torch.save(model.state_dict(), best_ckpt_path)
+            best_ckpt_path = os.path.join(args.ckpt_dir, f"best_val_loss_{epoch=}.ckpt")
+            torch.save(model, best_ckpt_path)
             # Remove the previous best checkpoint if it exists
             if not first_iteration_flag:
-                prev_best_ckpt_path = os.path.join(ckpt_dir, f"best_val_loss_epoch={prev_best_val_epoch}.ckpt")
+                prev_best_ckpt_path = os.path.join(args.ckpt_dir, f"best_val_loss_epoch={prev_best_val_epoch}.ckpt")
                 if os.path.exists(prev_best_ckpt_path):
                     os.remove(prev_best_ckpt_path)
             first_iteration_flag = False

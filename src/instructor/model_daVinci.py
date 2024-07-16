@@ -30,6 +30,10 @@ class Instructor(nn.Module):
         self,
         device,
         history_len,
+        history_step_size,
+        prediction_offset,
+        camera_names,
+        center_crop_flag,
         output_size=768,
         hidden_size=512,
         num_heads=8,
@@ -77,6 +81,10 @@ class Instructor(nn.Module):
         )
 
         self.history_len = history_len
+        self.history_step_size = history_step_size
+        self.prediction_offset = prediction_offset
+        self.camera_names = camera_names
+        self.center_crop_flag = center_crop_flag
         self.candidate_embeddings = candidate_embeddings 
         self.candidate_texts = candidate_texts
         self.command_to_index = command_to_index 
