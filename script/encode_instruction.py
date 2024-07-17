@@ -11,22 +11,44 @@ import argparse
 from tqdm import tqdm
 import numpy as np
 import sys
-sys.path.append("$PATH_TO_YAY_ROBOT/src")  # to import aloha
+
+path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
+# print(path_to_yay_robot)
+if path_to_yay_robot:
+    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
 
 
-def process_file(file_path, encoder, tokenizer, model):
-    with open(file_path, "r") as file:
-        data = json.load(file)
+def process_file(file_path, command, encoder, tokenizer, model):
 
-    for entry in data:
-        entry["embedding"] = encode_text(entry["command"], encoder, tokenizer, model)
 
-    # Save the updated data to a new file based on the encoder type
-    new_file_path = file_path.replace(".json", f"_encoded_{encoder}.json")
+    _, phase_command = command.split("_")[0], " ".join(command.split("_")[1:])
+    emb = encode_text(phase_command, encoder, tokenizer, model)
+    print(phase_command)
 
-    with open(new_file_path, "w") as file:
-        json.dump(data, file)
+    # Define the content of the episode
+    episode_content = [
+        {
+            "command": phase_command,
+            "embedding": emb
+        }
+    ]
+    if os.path.exists(file_path):
+        # Read existing data from the JSON file
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+
+        # Append new data to the existing data
+        data.append(episode_content)
+
+        # Write the episode content to the file
+        with open(file_path, "w") as file:
+            json.dump(data, file)
+
+    else:
+        # Write the episode content to the file
+        with open(file_path, "w") as file:
+            json.dump(episode_content, file)
 
 
 def generate_embeddings_file(candidate_texts, encoder, tokenizer, model, output_file):
@@ -76,29 +98,31 @@ if __name__ == "__main__":
         action="store_true",
         help="Generate embeddings directly from instructions in 'count.txt'.",
     )
+
     args = parser.parse_args()
 
     tokenizer, model = initialize_model_and_tokenizer(args.encoder)
     dataset_dir = args.dataset_dir
     encoder = args.encoder
 
-    if args.from_count:
-        candidate_texts_path = os.path.join(dataset_dir, "count.txt")
-        candidate_texts = load_candidate_texts(candidate_texts_path)
-        output_file = os.path.join(dataset_dir, f"candidate_embeddings_{encoder}.npy")
-        generate_embeddings_file(
-            candidate_texts, encoder, tokenizer, model, output_file
-        )
-    else:
-        # List of files to process
-        files_to_process = [
-            f
-            for f in os.listdir(dataset_dir)
-            if "episode_" in f and f.endswith(".json") and "_encoded" not in f
-        ]
+    phases = os.listdir(dataset_dir)
+    # print(phases)
 
-        # Loop over all the "episode_{idx}.json" files in the dataset_dir with a progress bar
-        for file_name in tqdm(files_to_process, desc="Processing files"):
-            process_file(
-                os.path.join(dataset_dir, file_name), encoder, tokenizer, model
-            )
+    # # if args.from_count:
+    output_file = os.path.join(dataset_dir, f"candidate_embeddings_{encoder}.json")
+    # generate_embeddings_file(
+    #     phases, encoder, tokenizer, model, output_file
+    # )
+    # else:
+    # List of files to process
+    files_to_process = [
+        f
+        for f in os.listdir(dataset_dir)
+        if not f.endswith(".json")
+    ]
+    print(files_to_process)
+    # Loop over all the "episode_{idx}.json" files in the dataset_dir with a progress bar
+    for file_name in tqdm(files_to_process, desc="Processing files"):
+        process_file(
+            output_file, file_name, encoder, tokenizer, model
+        )
