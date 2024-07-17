@@ -15,7 +15,7 @@ from pytransform3d import rotations, batch_rotations, transformations, trajector
 from torchvision import transforms, utils
 import seaborn as sns
 from tqdm import tqdm
-
+import json
 # path_to_yay_robot = "/home/jchen396/scr4_akriege1/chole/yay_robot_jhu"
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 
@@ -46,6 +46,35 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
         phase_command_embeddings_dict[phase_folder_name]= (phase_command, embedding)
 
     return phase_command_embeddings_dict
+
+def get_command_embeddings_from_json(unique_phase_folder_names, json_file_name):
+    phase_command_embeddings_dict = {}
+
+    with open(json_file_name, "r") as f:
+        episode_data = json.load(f)
+
+    for phase_folder_name in tqdm(unique_phase_folder_names, desc="Embedding phase commands"):
+
+        # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
+        _, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
+
+        # Search for the command in the JSON data
+        found_embedding = None
+        for item in episode_data:
+            # print(item)
+            if isinstance(item, dict) and item.get('command') == phase_command:
+
+                found_embedding = item.get('embedding')
+                break
+        
+        # Store the found embedding (if any)
+        if found_embedding is not None:
+            phase_command_embeddings_dict[phase_folder_name] = (phase_command, found_embedding)
+        else:
+            print(f"Embedding not found for command: {phase_command}")
+    
+    return phase_command_embeddings_dict
+
 
 def split_tissue_samples(dataset_dir, num_tissue_samples, train_ratio, val_ratio, test_ratio):
     # Calculate the number of samples for each set
@@ -212,6 +241,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
 
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
+        self.command_embeddings_dict = {}
         for tissue_sample_id in tissue_sample_ids:
             tissue_sample_name = f"phantom_{tissue_sample_id}"
             # tissue_sample_name = f"tissue_{tissue_sample_id}"
@@ -231,7 +261,22 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                     if demo_sample == "Corrections":
                         demo_samples.remove(demo_sample)
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
+            ## create language embeddings
+            if self.use_language:
+                self.language_encoder = language_encoder
+                # tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
+                unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
 
+                # print("phase:", unique_phase_folder_names)
+                # print("\ngenerating command embeddings...\n")
+                # self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, self.language_encoder, tokenizer, model)
+                json_name = f"candidate_embeddings_{self.language_encoder}.json"
+                json_path = os.path.join(tissue_sample_dir_path, json_name)
+
+                self.command_embeddings_dict[tissue_sample_name] = get_command_embeddings_from_json(unique_phase_folder_names, json_path)
+                # print("embeddings:", self.command_embeddings_dict)
+
+                # del tokenizer, model
                 # print(f"   {phase_sample}, {demo_samples}\n")
         # print("num of tissues:", len(self.tissue_phase_demo_dict.keys()))
 
@@ -241,18 +286,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                     for phase in self.tissue_phase_demo_dict[tissue_sample]
                     for sample in self.tissue_phase_demo_dict[tissue_sample][phase]]
         
-        ## create language embeddings
-        if self.use_language:
-            self.language_encoder = language_encoder
-            tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
-            unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
 
-            # print("phase:", unique_phase_folder_names)
-            # print("\ngenerating command embeddings...\n")
-            self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, self.language_encoder, tokenizer, model)
-            # print("embeddings:", self.command_embeddings_dict)
-
-            del tokenizer, model
 
         self.header_name_qpos_psm1 = ["psm1_pose.position.x", "psm1_pose.position.y", "psm1_pose.position.z",
                                 "psm1_pose.orientation.x", "psm1_pose.orientation.y", "psm1_pose.orientation.z", "psm1_pose.orientation.w",
@@ -513,7 +547,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         # action_data = (action_data - mean) / std
       
         if self.use_language:
-            phase_command, embedding = self.command_embeddings_dict[phase]
+            phase_command, embedding = self.command_embeddings_dict[tissue_sample][phase]
             command_embedding = torch.tensor(embedding).squeeze()
             return image_data, qpos_data, action_data, is_pad, command_embedding
         else:
@@ -529,7 +563,7 @@ Test the EpisodicDatasetDvrkGeneric class.
 #     # path_to_dataset = "/home/imerse/chole_ws/data"
 
 #     dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
-#     tissue_samples_ids = [6]
+#     tissue_samples_ids = [1]
 #     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
 #     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
 #     num_episodes = 200 # Total number of episodes
@@ -554,7 +588,7 @@ Test the EpisodicDatasetDvrkGeneric class.
 #     if use_language_flag:
 #         image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
 #         print(f"Image sequence shape: {image_data.shape}")
-#         print(f"Language embedding shape: {command_embedding.shape}")
+#         # print(f"Command: {command}")
 #     else:
 #         image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
 

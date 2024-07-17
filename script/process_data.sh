@@ -1,12 +1,12 @@
 #!/bin/bash
 
-DATASETS=("aloha_bag_3_objects" "aloha_trail_mix")
-PATH_TO_DATASET="/scr/lucyshi/dataset"
+DATASETS=("phantom_1")  #tissue_1
+PATH_TO_DATASET="/home/imerse/chole_ws/data/base_chole_clipping_cutting"
 
 # Encoding instructions
 for DATASET in "${DATASETS[@]}"; do
-    python script/encode_instruction.py --dataset_dir $PATH_TO_DATASET/$DATASET --encoder distilbert
-    python script/encode_instruction.py --dataset_dir $PATH_TO_DATASET/$DATASET --encoder distilbert --from_count
+    # python script/encode_instruction.py --dataset_dir $PATH_TO_DATASET/$DATASET --encoder distilbert
+    python encode_instruction.py --dataset_dir $PATH_TO_DATASET/$DATASET --encoder distilbert --from_count
 done
 
 # Copy data to cluster
