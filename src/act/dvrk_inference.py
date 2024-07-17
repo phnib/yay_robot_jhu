@@ -15,9 +15,16 @@ from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
 import sys
+
+# path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
+path_to_yay_robot = "/home/grapes/catkin_ws/src/yay_robot_jhu"
+
+if path_to_yay_robot:
+    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
+
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
-from utils import load_data, load_data_dvrk # data functions
+from utils import load_data_dvrk # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 
@@ -29,22 +36,19 @@ from pytransform3d.trajectories import plot_trajectory
 
 from sim_env import BOX_POSE
 
-from dvrk_scripts.rostopics import ros_topics
+from rostopics import ros_topics
 import rospy
 import cv2
 import crtk
 # from delete_me_2 import example_application
 from mpl_toolkits import mplot3d
-from sksurgerycore.algorithms.averagequaternions import weighted_average_quaternions
+# from sksurgerycore.algorithms.averagequaternions import weighted_average_quaternions
 from pytransform3d import rotations, batch_rotations, transformations, trajectories
 from dvrk_scripts.dvrk_control import example_application
 # from constants_inference import TASK_CONFIGS
 from dvrk_scripts.constants_inference import TASK_CONFIGS
 
-path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 
-if path_to_yay_robot:
-    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
 
 import time
@@ -55,26 +59,28 @@ set_seed(0)
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--action_mode', action='store', type=str, help='SE3, hybrid', required=True)
-parser.add_argument('--norm_scheme', action='store', type=str, help='std, min_max', required=True)
+# parser.add_argument('--action_mode', action='store', type=str, help='SE3, hybrid', required=True)
+# parser.add_argument('--norm_scheme', action='store', type=str, help='std, min_max', required=True)
+action_mode = 'hybrid'
 parser.add_argument('--ckpt_dir', action='store', type=str, 
                     help='specify ckpt file path', 
                     required=True)
-
+# ckpt_dir = "/home/grapes/catkin_ws/policy_epoch_20000_seed_0.ckpt"
 # needed to avoid error for detr
 parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
 parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
 parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
 parser.add_argument('--use_language', action='store_true')
-
+parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
 args = parser.parse_args()
 
 
 task_config = TASK_CONFIGS[args.task_name]
-mean = task_config['action_mode'][args.action_mode]['mean']
-std = task_config['action_mode'][args.action_mode]['std']
-max_ = task_config['action_mode'][args.action_mode]['max_']
-min_ = task_config['action_mode'][args.action_mode]['min_']
+# print(task_config['action_mode'])
+mean = task_config['action_mode'][1]['mean']
+std = task_config['action_mode'][1]['std']
+max_ = task_config['action_mode'][1]['max_']
+min_ = task_config['action_mode'][1]['min_']
 # max_ = None
 # min_ = None
 
@@ -91,7 +97,7 @@ state_dim = 20
 temporal_agg = False
 max_timesteps = 25
 num_inferences = 80
-action_execution_horizon = 14
+action_execution_horizon = 20
 
 
 # hyperparams that never needs to change
@@ -107,8 +113,9 @@ nheads = 8
 multi_gpu = None
 use_language = args.use_language
 language_encoder = "distilbert"
-command = "grabbing gallbladder"    # "clipping first clip left tube"
-
+# command = "clipping first clip left tube"  #"grabbing gallbladder"  
+command = "grabbing gallbladder"  
+num_epochs = args.num_epochs
 camera_names = ['left', 'right', 'left_wrist', 'right_wrist']
 policy_config = {'lr': 1e-5,
                 'num_queries': chunk_size,
@@ -118,12 +125,13 @@ policy_config = {'lr': 1e-5,
                 'lr_backbone': lr_backbone,
                 'backbone': backbone,
                 'enc_layers': enc_layers,
+                'num_epochs': num_epochs,
                 'dec_layers': dec_layers,
                 'nheads': nheads,
                 'camera_names': camera_names,
                 "multi_gpu": multi_gpu,
                 }
-
+# print(policy_config)
 # load policy and stats
 policy = ACTPolicy(policy_config)
 checkpoint = torch.load(args.ckpt_dir)
@@ -203,7 +211,9 @@ def convert_actions_to_SE3_then_final_actions(dts, dquats, qpos_psm, jaw_angles)
     output[:, 0:3] = g_poses[:, 0:3, 3]
     tmp = batch_rotations.quaternions_from_matrices(g_poses[:, 0:3, 0:3]) # [n x wxyz]
     output[:, 3:7] = batch_rotations.batch_quaternion_xyzw_from_wxyz(tmp) # convert wxyz to xyzw
-    output[:, 7] = np.clip(jaw_angles, -0.698, 0.698)  # copy over gripper angles
+    # print("pred jaw angle: ", output[:, 7])
+    
+    output[:, 7] = np.clip(jaw_angles, -0.35, 1.4)  # copy over gripper angles
     return output
 
 def unnormalize_action(naction, norm_scheme):
@@ -305,7 +315,7 @@ with torch.inference_mode():
         curr_image = get_image_dvrk()
 
         action = policy(qpos_zero, curr_image, command_embedding=command_embedding).cpu().numpy().squeeze() # 1 x 100 x state_dim (20) -> 100 x 20
-        action = unnormalize_action(action, args.norm_scheme)
+        action = unnormalize_action(action, "std")
 
         actions_psm1 = None
         actions_psm2 = None
@@ -318,7 +328,7 @@ with torch.inference_mode():
                     rt.psm2_pose.orientation.x, rt.psm2_pose.orientation.y, rt.psm2_pose.orientation.z, rt.psm2_pose.orientation.w,
                     rt.psm2_jaw))
 
-        if args.action_mode == 'hybrid':
+        if action_mode == 'hybrid':
 
             actions_psm1 = np.zeros((chunk_size, 8)) # pos, quat, jaw
             actions_psm1[:, 0:3] = qpos_psm1[0:3] + action[:, 0:3] # convert to current translation
@@ -328,9 +338,10 @@ with torch.inference_mode():
             actions_psm2 = np.zeros((chunk_size, 8)) # pos, quat, jaw
             actions_psm2[:, 0:3] = qpos_psm2[0:3] + action[:, 10:13] # convert to current translation
             actions_psm2 = convert_delta_6d_to_taskspace_quat(action[:, 10:], actions_psm2, qpos_psm2)
+            # print(action[:, 19])
             actions_psm2[:, 7] = np.clip(action[:, 19], -0.698, 0.698)  # copy over gripper angles  
             
-        if args.action_mode == 'ego':
+        if action_mode == 'ego':
             # compute actions for PSM1
             actions_psm1 = np.zeros((chunk_size, 8)) # pos (3), quat (4), jaw (1) 
             dts_psm1 = action[:, 0:3]
@@ -359,9 +370,9 @@ with torch.inference_mode():
         # ax.yaxis.set_major_locator(plt.MaxNLocator(n_bins))
         # ax.zaxis.set_major_locator(plt.MaxNLocator(n_bins))
         # plt.show()
-
+        # input("Press Enter to continue...")
         # assert(False)
 
         for jj in range(action_execution_horizon):
             ral.spin_and_execute(psm1_app.run_full_pose_goal, actions_psm1[jj])
-            ral.spin_and_execute(psm2_app.run_full_pose_goal, actions_psm2[jj])
+            ral.spin_and_execute(psm2_app.run_full_pose_goal_tmp, actions_psm2[jj])
