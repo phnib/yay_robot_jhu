@@ -8,24 +8,24 @@ DATASET_CONFIGS = {
         "dataset_dir": os.path.join(DATA_DIR, "base_chole_clipping_cutting"),
         "num_episodes": 2500, # TODO: Adjust here the number of generated episode of the generated chole recordings
         "incomplete_tissue_samples": ["tissue_1"], # Should not be used for HL policy training - good for LL and ML policy training 
-        "camera_names": ["endo_psm2", "left_img_dir", "endo_psm1"], # "right_img_dir", 
-        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_psm1.jpg"], # "_right.jpg",
+        "camera_names": ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"], 
+        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"],
         "after_phase_offset": 10,
         "before_phase_offset": 10,   
     },
     "debugging": { # TODO: Remove later again
         "dataset_dir": os.path.join(DATA_DIR, "debugging"),
         "num_episodes": 200,
-        "camera_names": ["endo_psm2", "left_img_dir", "endo_psm1"], # "right_img_dir",
-        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_psm1.jpg"], # "_right.jpg",
+        "camera_names": ["endo_psm2", "left_img_dir", "_right.jpg", "endo_psm1"],
+        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"],
         "after_phase_offset": 10,
         "before_phase_offset": 10,
     },
     "debugging2": { # TODO: Remove later again
         "dataset_dir": os.path.join(DATA_DIR, "debugging2"),
         "num_episodes": 2500,
-        "camera_names": ["endo_psm2", "left_img_dir", "endo_psm1"], # "right_img_dir"
-        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_psm1.jpg"], # "_right.jpg",
+        "camera_names": ["endo_psm2", "left_img_dir", "_right.jpg", "endo_psm1"],
+        "camera_file_suffixes": ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"],
         "after_phase_offset": 10,
         "before_phase_offset": 10,
     },

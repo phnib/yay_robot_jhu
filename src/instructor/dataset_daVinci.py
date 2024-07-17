@@ -133,6 +133,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         for tissue_sample_name in tissue_sample_names:
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name))]
+            phases = [phase for phase in phases if "recovery" not in phase]  # TODO: Remove later again, but for now filter recovery phases
             phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases_ordered:

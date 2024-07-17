@@ -1,17 +1,8 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py \
-    --dataset_names debugging \
-    --ckpt_dir $YOUR_CKPT_PATH/debugging_ckpt \
-    --batch_size 64 \
-    --num_epochs 15000 \
-    --lr 1e-4 \
-    --history_step_size 30 \
-    --prediction_offset 15 \
-    --history_len 3 \
-    --seed 0 \
-    --log_wandb
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len
+ 3     --seed 1   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5
 """
 
 import os
@@ -45,10 +36,10 @@ from instructor.model_daVinci import Instructor
 
 
 
-def train(model, dataloader, optimizer, criterion, device):
+def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epoch, max_num_images=10):
     model.train()
     total_loss = 0.0
-    for batch in dataloader:
+    for batch_idx, batch in enumerate(dataloader):
         images, _, commands = batch
         images = images.to(device)
 
@@ -67,6 +58,25 @@ def train(model, dataloader, optimizer, criterion, device):
 
         if args.log_wandb:
             wandb.log({"Train Loss": loss.item(), "Temperature": temperature.item()})
+            
+        # Save images from the last batch (to see, e.g., the augmentation applied)
+        if batch_idx == len(dataloader) - 1:
+            saved_img_cnt = 0
+            for img_idx in range(len(images)):
+                if saved_img_cnt >= max_num_images:
+                    break
+                
+                gt = commands[img_idx]
+                pred = model.decode_logits(logits[img_idx].unsqueeze(0), temperature)[0]
+
+                save_path = os.path.join(ckpt_dir, "training_images", f"epoch_{current_epoch}_{batch_idx}_{img_idx}.jpg")
+                log_combined_image(images[img_idx], gt, pred, save_path)
+                
+                if args.log_wandb:
+                    wandb.log({f"Training Image {saved_img_cnt}": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+
+                saved_img_cnt += 1
+            
     return total_loss / len(dataloader)
 
 
@@ -424,6 +434,7 @@ if __name__ == "__main__":
     parser.add_argument('--center_crop_flag', action='store_true', help='Center crop the images during preprocessing, preventing unnatural rescaling, but potentially cutting off important information')
     parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
     parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=10)
+    parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"])
 
     args = parser.parse_args()
 
@@ -441,17 +452,17 @@ if __name__ == "__main__":
         dataset_config = DATASET_CONFIGS[dataset]
         dataset_dirs.append(dataset_config["dataset_dir"])
         num_episodes_list.append(dataset_config["num_episodes"])
-        camera_names = dataset_config["camera_names"]
-        camera_file_suffixes = dataset_config["camera_file_suffixes"] 
+    camera_names = [camera_name for camera_name in dataset_config["camera_names"] if camera_name in args.cameras_to_use]
+    camera_file_suffixes = [camera_file_suffix for camera_file_suffix, camera_name in zip(dataset_config["camera_file_suffixes"], dataset_config["camera_names"]) if camera_name in args.cameras_to_use]
 
     # ---------------------- Define dataloaders and model ----------------------
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
     framewise_transforms = []
-    # framewise_transforms.append(transforms.RandomRotation(30))
-    # framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    framewise_transforms.append(transforms.RandomRotation(15))
+    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.8, 1.0))]))
     # framewise_transforms.append(v2.RandomPerspective(p=0.5))
     # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
@@ -569,6 +580,11 @@ if __name__ == "__main__":
     predictions_dir = os.path.join(args.ckpt_dir, "predictions")
     if not os.path.exists(predictions_dir):
         os.makedirs(predictions_dir)
+        
+    # Create a directory to save training images for the current run
+    training_images_dir = os.path.join(args.ckpt_dir, "training_images")
+    if not os.path.exists(training_images_dir):
+        os.makedirs(training_images_dir)
 
     # Test the model using the latest checkpoint - don't train
     if args.test_only_flag:
@@ -584,7 +600,7 @@ if __name__ == "__main__":
         if args.log_wandb:
             wandb.log({"Epoch": epoch})
         
-        train_loss = train(model, train_dataloader, optimizer, criterion, device)
+        train_loss = train(model, train_dataloader, optimizer, criterion, device, args.ckpt_dir, epoch, args.max_num_images)
         if args.dagger_ratio is None: 
             val_loss = evaluate(model, val_dataloader, criterion, device)
             
