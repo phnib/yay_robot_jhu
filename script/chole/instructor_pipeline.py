@@ -15,12 +15,12 @@ from torchvision import transforms
 import numpy as np
 import matplotlib.pyplot as plt
 import rospy
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, accuracy_score
 
 # Import the necessary modules from this package
-path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
-if path_to_yay_robot:
-    sys.path.append(os.path.join(path_to_yay_robot, 'src'))
+PATH_TO_YAY_ROBOT = os.getenv('PATH_TO_YAY_ROBOT')
+if PATH_TO_YAY_ROBOT:
+    sys.path.append(os.path.join(PATH_TO_YAY_ROBOT, 'src'))
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 
@@ -68,18 +68,17 @@ def psm2_wrist_camera_callback(data):
     
 # --------------- Utils function ---------------
 
-def create_random_chole_episode(dataset_dir, camera_names, camera_file_suffixes_aspect_ratio, downsampling_shape, center_crop_flag):
+def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_file_suffixes_aspect_ratio, downsampling_shape, center_crop_flag):
     # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
+       
+    print("\nGenerating a random episode sequence...\n")
        
     # Init the episode sequence and the ground truth instruction sequence
     episode_frame_sequence = []
     episode_gt_instruction_sequence = []
        
-    # Check within the dataset directory for the possible tissue ids + for tissue characteristics (e.g., before and after phase offset)
+    # Check within the dataset directory for tissue characteristics (e.g., before and after phase offset)
     dataset_name = os.path.basename(dataset_dir)
-    incomplete_tissues = DATASET_CONFIGS["incomplete_tissue_samples"] if "incomplete_tissue_samples" in DATASET_CONFIGS else []
-    tissue_folder_names = [tissue_name for tissue_name in os.listdir(dataset_dir) if tissue_name not in incomplete_tissues]
-    selected_tissue_sample = np.random.choice(tissue_folder_names)
     before_phase_offset = DATASET_CONFIGS[dataset_name]["before_phase_offset"]
     after_phase_offset = DATASET_CONFIGS[dataset_name]["after_phase_offset"]
     
@@ -134,7 +133,7 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
         # Load the current video frame
         success, image = video_capture.read()
 
-        # Raise error if the image could not be loaded
+        # Stop the pipeline if the video has ended (or could not be loaded)
         if not success:
             return success, None
         
@@ -195,11 +194,14 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
         
     elif input_type == "random":
         # Access the random generated episode frames
-        current_frames_transformed = random_episode_sequence[frame_idx]  # TODO: Check if it has the shape: cam, c, h, w
-        return True, current_frames_transformed
+        if frame_idx >= len(random_episode_sequence):
+            return False, None
+        else:
+            current_frames_transformed = random_episode_sequence[frame_idx]  # TODO: Check if it has the shape: cam, c, h, w
+            return True, current_frames_transformed
     
     
-def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None):
+def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None, upscaling_factor=2):
     # Visualize the current frames (with the current language instruction prediction - if also gt is given then also visualize that)
     
     # Concatenate the frames together
@@ -210,32 +212,35 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
     prediction_text = f"Prediction: {language_instruction_prediction}"
     if language_instruction_ground_truth:
         prediction_text_color = (0, 255, 0) if language_instruction_prediction == language_instruction_ground_truth else (0, 0, 255)
-        prediction_text += f"      GT: {language_instruction_ground_truth}"
+        gt_text = f"GT: {language_instruction_ground_truth}"
     else:
         prediction_text_color = (255, 255, 255)
-    # TODO: Color of the text correct?
     current_frames_concatenated_bgr = cv2.cvtColor(current_frames_concatenated, cv2.COLOR_RGB2BGR) 
-    cv2.putText(current_frames_concatenated_bgr, prediction_text, (text_position_x, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, prediction_text_color, 1, cv2.LINE_AA)
+    current_frames_concatenated_bgr_upscaled = cv2.resize(current_frames_concatenated_bgr, (current_frames_concatenated_bgr.shape[1]*upscaling_factor, current_frames_concatenated_bgr.shape[0]*upscaling_factor))
+    font = cv2.FONT_HERSHEY_DUPLEX
+    font_scale, thickness = 0.75, 2
+    cv2.putText(current_frames_concatenated_bgr_upscaled, prediction_text, (text_position_x, 25), font, font_scale, prediction_text_color, thickness, cv2.LINE_AA)
+    if language_instruction_ground_truth:
+        cv2.putText(current_frames_concatenated_bgr_upscaled, gt_text, (text_position_x, 60), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     
     # Show the concatenated frames
-    cv2.imshow("HL Policy Prediction", current_frames_concatenated_bgr)
+    cv2.imshow("HL Policy Prediction", current_frames_concatenated_bgr_upscaled)
+    
+    return current_frames_concatenated_bgr_upscaled # Return the annotated frame for saving the video
 
 
-def evaluate_instruction_prediction(predictions, ground_truths, timestamp):
+def evaluate_instruction_prediction(predictions, ground_truths, timestamp, save_folder_path):
     # Init metrics dict
     metrics_dict = {}
     
-    # TODO
-    
     # Compute the accuracy, f1 score, confusion matrix
-    metrics_dict["accuracy"] = (predictions == ground_truths).mean()
-    metrics_dict["f1_score"] = f1_score(predictions, ground_truths)
+    metrics_dict["accuracy"] = accuracy_score(ground_truths, predictions)
+    metrics_dict["f1_score"] = f1_score(ground_truths, predictions, average="macro")
     
     # Save the confusion matrix function from the training script 
     language_commands = list(np.unique(ground_truths))
-    # TODO: Check if saving works and the path is correct?
-    save_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "evaluation", "hl_policy_pipeline", "confusion_matrix_{timestamp}.png")
-    log_confusion_matrix(ground_truths, predictions, language_commands, save_path=save_path)
+    save_path = os.path.join(save_folder_path, f"confusion_matrix_{timestamp}.png")
+    log_confusion_matrix(ground_truths, predictions, language_commands, save_path=save_path, log_wandb_flag=False)
 
     return metrics_dict
 
@@ -245,9 +250,10 @@ def instructor_pipeline(args):
     # ------------- Access the command line parameters -------------
 
     # Output the command line parameters
+    print("\n----------------------- Command line parameters ----------------------------\n")
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
-
+    print("\n-----------------------------------------------------------------------------\n")
     # -------------- Initialize the instructor model --------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -263,7 +269,19 @@ def instructor_pipeline(args):
     model_camera_names = checkpoint.camera_names
     center_crop_flag = checkpoint.center_crop_flag
     instructor_model = build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, model_camera_names, center_crop_flag)
+    
+    # TODO: Compare model state dict and checkpoint state dict
+    model_state_dict = instructor_model.state_dict()
+    ckpt_state_dict = checkpoint.state_dict()
+    # TODO: Compare the keys of the model
+    difference_in_keys = set(model_state_dict.keys()) - set(ckpt_state_dict.keys())
+    print(f"Difference in keys: {difference_in_keys}")
+    
+    
     instructor_model.load_state_dict(checkpoint.state_dict())
+    
+    # TODO: Check if all the weigths are loaded correctly
+    
     instructor_model.to(device)
     del checkpoint # Free up memory
 
@@ -275,13 +293,13 @@ def instructor_pipeline(args):
     instructor_model.eval()
     
     # ------------- Initialize ROS communication -------------
-    if args.input_type == "live":
-        rospy.init_node('hl_policy_pipepline', anonymous=True)
-        
-        # Set the rate of the ROS node
-        ros_fps = args.ros_fps
-        rate = rospy.Rate(ros_fps)
-        
+    
+    rospy.init_node('hl_policy_pipepline', anonymous=True)
+    
+    # Set the rate of execution
+    rate = rospy.Rate(args.fps)
+    
+    if args.input_type == "live":        
         # Instructor publisher for the language instruction prediction
         instruction_publisher = rospy.Publisher("/instructor_prediction", String) 
         instruction_embedding_publisher = rospy.Publisher("/instructor_embedding", Float32MultiArray) # TODO: Check if this is the correct type?
@@ -306,7 +324,7 @@ def instructor_pipeline(args):
     
     if args.input_type == "random":
         # Generate a random episode
-        episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.camera_names, args.camera_file_suffixes_aspect_ratio, args.downsampling_shape, center_crop_flag) 
+        episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_id, args.camera_names, args.camera_file_suffixes_aspect_ratio, args.downsampling_shape, center_crop_flag) 
     
         # Check if the gt instructions are within the learned instructions of the model
         gt_instructions_set = set(episode_gt_instruction_sequence)
@@ -317,12 +335,10 @@ def instructor_pipeline(args):
     # -------------- Initialize evaluation variables --------------
     
     # Initialize the language instruction prediction and ground truth lists
-    predictions, ground_truths = [], []
+    instruction_pred_list, instruction_gt_list = [], []
     
     # Evaluation timing variables
     timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
-    inference_time_last_100_samples = [] 
-    fps_list = []
     if args.save_video_flag:
         concat_frame_list = [] # Array to store the concatenated frames (for later saving as video)
     execution_times_dict = defaultdict(list)
@@ -333,42 +349,50 @@ def instructor_pipeline(args):
     # Keeping the last frames (for the history length)
     model_input_frames = deque(maxlen=history_len+1)
     
+    vis_stopped_flag = False
     frame_idx = 0
     while True:
-        # Track the inference time
         with measure_execution_time("Total inference time", execution_times_dict):
             # -------------- Load current camera frames --------------
 
-            # TODO: Check integrated history step size
             with measure_execution_time("Loading video frame time", execution_times_dict):
+                if args.input_type == "random":
+                    success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx, random_episode_sequence=episode_sequence)
+                elif args.input_type == "video":
+                    success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, video_capture=cap, camera_names=args.camera_names, camera_file_suffixes_aspect_ratio=args.camera_file_suffixes_aspect_ratio)
+                elif args.input_type == "live":
+                    success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, camera_names=args.camera_names, camera_file_suffixes_aspect_ratio=args.camera_file_suffixes_aspect_ratio)
+                # Break out of the loop if the image could not be loaded (e.g., end of video)
+                if not success:
+                    break   # Stop the loop if the video has ended - and save the video up to here (if desired)
+                # Add the current frames to the model input frames + generate current input tensor
+                
+                # Add frames to model input based on the history step size
                 if frame_idx % history_step_size == 0:
-                    if args.input_type == "random":
-                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx, random_episode_sequence=episode_sequence)
-                    elif args.input_type == "video":
-                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, video_capture=cap, camera_names=args.camera_names, camera_file_suffixes_aspect_ratio=args.camera_file_suffixes_aspect_ratio)
-                    elif args.input_type == "live":
-                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, camera_names=args.camera_names, camera_file_suffixes_aspect_ratio=args.camera_file_suffixes_aspect_ratio)
-                    # Break out of the loop if the image could not be loaded (e.g., end of video)
-                    if not success:
-                        break   # Stop the loop if the video has ended - and save the video up to here (if desired)
-                    # Add the current frames to the model input frames + generate current input tensor
                     model_input_frames.append(current_frames)
                     model_input_frames_tensor = torch.stack(list(model_input_frames), dim=0).to(device).unsqueeze(0) # Shape: batch_size (=1), history_len, cam, c, h, w # TODO: Check if this is the correct dim
             
             # -------------- Predict (+publish) the language instruction --------------
             
-            if frame_idx % args.prediction_stride == 0 and len(model_input_frames) == history_len+1:
+            # Start with predictions after the history length is reached and predict every x frames and not at the beginning (as starting with the first phase)
+            if frame_idx % args.prediction_stride == 0 and len(model_input_frames) == history_len+1 and frame_idx != 0:
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
                     logits, temperature, predicted_embedding = instructor_model(model_input_frames_tensor)
                 
                     # Decode the model output to the language instruction
                     predicted_instruction = instructor_model.decode_logits(logits, temperature)[0]
-            elif len(model_input_frames) < history_len+1:
+                    if args.input_type == "random":
+                        gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
+                        instruction_gt_list.append(gt_instruction)
+                        instruction_pred_list.append(predicted_instruction)
+            elif frame_idx == 0:
                 # Wait with predictions until the history length is reached and begin with the first instruction (which is the same for all demos)
                 # TODO: Can I get the first command like that here not to do this differently? Or hardcode Grabbing the gallbladder (+ its embedding)?
                 predicted_instruction = candidate_texts[0]
                 predicted_embedding = candidate_embeddings[0]
+                if args.input_type == "random":
+                    gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
             
             # Publish the predicted language instruction
             if args.input_type == "live":
@@ -380,28 +404,25 @@ def instructor_pipeline(args):
             with measure_execution_time("Visualizing frame time", execution_times_dict):
                 # Visualization of the predicted language instruction
                 if args.input_type == "random":
-                    gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
-                    annotated_frame = visualize_current_frames(current_frames, predicted_instruction, gt_instruction)
+                    annotated_frame = visualize_current_frames(current_frames, predicted_instruction, gt_instruction, upscaling_factor=args.upscaling_factor)
                 else:
-                    annotated_frame = visualize_current_frames(current_frames, predicted_instruction)
+                    annotated_frame = visualize_current_frames(current_frames, predicted_instruction, upscaling_factor=args.upscaling_factor)
             
             if args.save_video_flag:
                 concat_frame_list.append(annotated_frame)
 
         # -------------- Update + log execution times --------------  
-        
-        inference_time = execution_times_dict["Total inference time"][-1]
-        fps_list.append(1 / inference_time)
-        inference_time_last_100_samples.append(inference_time)
-        if len(inference_time_last_100_samples) > 100:
-            inference_time_last_100_samples.pop(0)
             
-        # Log the average execution times of the last 100 samples
+        # Log the average execution times of the last n samples
         print("") # Add empty line for better readability
+        last_n_samples = 100
+        num_samples_time_eval = min(len(execution_times_dict["Total inference time"]), last_n_samples)
         for key, value in execution_times_dict.items():
             if key != "Total inference time":
-                print(f"{key} (last {len(inference_time_last_100_samples)} samples): {np.mean(value[-100:])*1000:.2f} ms")
-        print(f"--> Total inference time (last {len(inference_time_last_100_samples)} samples): {np.mean(inference_time_last_100_samples)*1000:.2f} ms")
+                print(f"{key} (last {num_samples_time_eval} samples): {np.mean(value[-last_n_samples:])*1000:.2f} ms")
+        # For better visibility (+ with infos on the number of frames - as higher at the beginning at start of the process)
+        # Note: The average total inference time might be lower than the individual components as not every frame is processed (by the model)
+        print(f"--> Total inference time (last {num_samples_time_eval} samples): {np.mean(execution_times_dict['Total inference time'][-last_n_samples:])*1000:.2f} ms")
 
         print("\n------------------------------------------------------")
 
@@ -411,14 +432,14 @@ def instructor_pipeline(args):
 
         # Break out of the loop if the user pressed q
         if cv2.waitKey(1) == ord('q'):
+            vis_stopped_flag = True
             break
         
-        # --------------------- Ros rate ---------------------
-        
-        if args.input_type == "live":
-            rate.sleep()
+        # Sleep to ensure given rate (for both offline and live data)
+        rate.sleep()
 
-    cap.release()
+    if args.input_type == "video":
+        cap.release()
     cv2.destroyAllWindows()
     plt.close('all')
     
@@ -427,7 +448,7 @@ def instructor_pipeline(args):
     # Save the detected images as video (if desired)
     if args.save_video_flag:
         # Define the output folder
-        output_folder_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "evaluation", "hl_policy_pipeline", args.input_type)
+        output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, f"tissue_{args.tissue_id}_{timestamp=}")
 
         # Create the recordings folder if it does not exist
         if not os.path.exists(output_folder_path):
@@ -435,11 +456,7 @@ def instructor_pipeline(args):
 
         # Define the codec and create VideoWriter object
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        if args.input_type in ["video", "random"]:
-            video_fps = 30 # FPS of the recording
-        else:
-            video_fps = np.mean(fps_list)
-            
+                    
         # Create the video file name
         if args.input_type == "live":
             video_file_path = os.path.join(output_folder_path, f'{args.input_type}_{timestamp=}.mp4')
@@ -447,7 +464,7 @@ def instructor_pipeline(args):
             additional_info = args.video_file_path.split("/")[-1].split(".")[0] if args.input_type == "video" else args.tissue_id
             video_file_path = os.path.join(output_folder_path, f'{args.input_type}_{additional_info}_{timestamp=}.mp4')
         video_dim = concat_frame_list[-1].shape[:2][::-1]
-        out = cv2.VideoWriter(video_file_path, fourcc, video_fps, video_dim)
+        out = cv2.VideoWriter(video_file_path, fourcc, args.fps, video_dim)
         # Write the detected images to the video
         for concat_frame in concat_frame_list:
             out.write(concat_frame)
@@ -456,24 +473,24 @@ def instructor_pipeline(args):
 
     # ----------------------- Evaluation ----------------------------
 
-    print("\n----------------------- Evaluation ----------------------------\n")
+    if not vis_stopped_flag:
+        print("\n----------------------- Evaluation ----------------------------\n")
 
-    # Evaluate the language instruction prediction
-    metrics_dict = evaluate_instruction_prediction(predictions, ground_truths, timestamp)
+        # Evaluate the language instruction prediction
+        if args.input_type == "random":
+            metrics_dict = evaluate_instruction_prediction(instruction_pred_list, instruction_gt_list, timestamp, output_folder_path)
 
-    # Detection + triangulation evaluation
-    print(f"Accuracy: {metrics_dict['accuracy']*100:.2f}")
-    print(f"F1 score: {metrics_dict['f1_score']*100:.2f}")
+        # Detection + triangulation evaluation
+        print(f"Accuracy: {metrics_dict['accuracy']*100:.2f}")
+        print(f"F1 score: {metrics_dict['f1_score']*100:.2f}")
+        
+        # Print average timings (for all different components, with keys in the dict + the total inference time)
+        print("\nAverage timings:")
+        for key, value in execution_times_dict.items():
+            if key != "Total inference time":
+                print(f"{key}: {np.mean(value)*1000:.2f} ms")
+        print(f"Total inference time: {np.mean(execution_times_dict['Total inference time'])*1000:.2f} ms")   
     
-    # Print average timings (for all different components, with keys in the dict + the total inference time + avg fps)
-    print("\nAverage timings:")
-    for key, value in execution_times_dict.items():
-        if key != "Total inference time":
-            print(f"{key}: {np.mean(value)*1000:.2f} ms")
-    print(f"Total inference time: {np.mean(execution_times_dict['Total inference time'])*1000:.2f} ms")
-    print(f"Median FPS: {np.median(fps_list):.2f}")   
-
-
 
 # -------------------------------- Create parser --------------------------------
 
@@ -487,13 +504,13 @@ def parse_pipeline_args():
     # --------------------------- Instruction model parameters ---------------------------
     
     # Instructor model path
-    default_ckpt_folder_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_ckpts", "hl", "debugging2")
-    default_ckpt_file_name = "best_val_loss_epoch=71"
+    default_ckpt_folder_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_ckpts", "hl", "debugging3")
+    default_ckpt_file_name = "best_val_loss_epoch=78"
     parser.add_argument('--ckpt_path', type=str, default=os.path.join(default_ckpt_folder_path, f"{default_ckpt_file_name}.ckpt"),
                         help="Path to the YOLO model file")
 
     # Prediction stride value to only predict every x frames
-    parser.add_argument('--prediction_stride', type=int, default=1, help="Prediction stride value (e.g., predict every x frames)")
+    parser.add_argument('--prediction_stride', type=int, default=2*30, help="Prediction stride value (e.g., predict every x frames)")
 
     # ---------------------------------- Data parameters -------------------------------------
     
@@ -507,13 +524,13 @@ def parse_pipeline_args():
     # Add video file path
     default_video_path = "/home/phansen/JHU-Projects/yay_robot_jhu/script/chole/GeneratedStitchedEpisodes/tissue=4_20240715-000355-095607/randomly_stitched_episode_tissue_4_1.avi"
     parser.add_argument('--video_file_path', type=str, default=default_video_path,  
-                        help="Path to recording to test the system offline with the KUKA simulation)")
+                        help="Path to recording to test the system offline)")
     
-    # ROS fps
-    parser.add_argument('--ros_fps', type=int, default=30, help="FPS of the ROS node")
+    # Fps (for ros communication + only for the video reading)
+    parser.add_argument('--fps', type=int, default=30, help="FPS of the ROS node")
     
     # Camera names - based on the order of the cameras, the images will be stacked together as model input
-    parser.add_argument('--camera_names', type=str, nargs='+', default=["endo_psm2", "left_img_dir", "endo_psm1"], help="Names of the cameras") # "right_img_dir"
+    parser.add_argument('--camera_names', type=str, nargs='+', default=["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"], help="Names of the cameras") # "right_img_dir"
     
     # Camera file suffixes and camera dimension dict (width, height)
     default_camera_file_suffixes_aspect_ratio_dict = {
@@ -526,12 +543,16 @@ def parse_pipeline_args():
                         help="Dictionary with the camera file suffixes and dimensions")
     
     # Add dataset directory
-    default_dataset_name = "debugging2" # TODO: Later use: base_chole_clipping_cutting
+    default_dataset_name = "debugging3" # TODO: Later use: base_chole_clipping_cutting
     default_dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), default_dataset_name)
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    parser.add_argument('--tissue_id', type=int, default=4, help="Tissue id for the random generated episode")
+    default_tissue_sample = "tissue_3"
+    parser.add_argument('--tissue_id', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
+    
+    # Upscaling factor for the visualization
+    parser.add_argument('--upscaling_factor', type=int, default=2, help="Upscaling factor for the visualization of the frames")
     
     # Add save video flag
     parser.add_argument('--save_video_flag', action='store_true', default=True,

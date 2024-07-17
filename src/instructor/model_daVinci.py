@@ -25,6 +25,7 @@ clip_transform = transforms.Compose(
     ]
 )
 
+# TODO: Add here the selection of the backend model
 class Instructor(nn.Module):
     def __init__(
         self,
@@ -34,10 +35,10 @@ class Instructor(nn.Module):
         prediction_offset,
         camera_names,
         center_crop_flag,
-        output_size=768,
-        hidden_size=512,
-        num_heads=8,
-        num_layers=6,
+        output_size=768, # DestillBert embedding space size
+        hidden_size=512, # For the MLP
+        num_heads=8, # For the Transformer
+        num_layers=6, # For the Transformer
         candidate_embeddings=None,
         candidate_texts=None,
         command_to_index=None,
@@ -47,15 +48,17 @@ class Instructor(nn.Module):
         super().__init__()
         self.one_hot_flag = one_hot_flag
 
+        # TODO: Call here backbone model init
         # Load the pretrained CLIP model
         self.clip_model, self.clip_text_model = load("ViT-B/32", device=device)
+        # TODO: Add here finetuning flag
         for param in self.clip_model.parameters():
             param.requires_grad = False  # Freeze the CLIP model parameters
 
         # Transformer for processing sequences of image embeddings
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model=self.clip_model.visual.output_dim,
+                d_model=self.clip_model.visual.output_dim, # TODO: Add here the output dim of the backbone model
                 nhead=num_heads,
                 dim_feedforward=hidden_size,
                 batch_first=True
