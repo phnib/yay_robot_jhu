@@ -1,7 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag --class_weights_flag
 """
 
 import os
@@ -468,6 +468,7 @@ if __name__ == "__main__":
     # endovit - possible weights: endo700k | imagenet
     parser.add_argument('--model_init_weights', action='store', type=str, help='model_init_weights', default="imagenet")
     parser.add_argument('--freeze_backbone_until', action='store', type=str, help='freeze_backbone_until', default="all") 
+    parser.add_argument('--class_weights_flag', action='store_true', help='Use class weights for the loss function')
     
     args = parser.parse_args()
 
@@ -596,7 +597,10 @@ if __name__ == "__main__":
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    criterion = torch.nn.CrossEntropyLoss()
+    if args.class_weights_flag and not args.test_only_flag:
+        criterion = torch.nn.CrossEntropyLoss(weight=ds_metadata_dict["class_weights"].to(device)) # weight the loss based on the number of phases per language instruction
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
 
     # Load the most recent checkpoint if available
     if not os.path.isdir(args.ckpt_dir):

@@ -5,7 +5,6 @@ import sys
 from collections import defaultdict
 import math
 
-import yaml
 import cv2
 import numpy as np
 import torch
@@ -350,6 +349,7 @@ def load_merged_data(
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
     command_embeddings_dict = {}
+    class_occ_cnt_dict = defaultdict(lambda: 0)
     for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
         # Load dataset dir and count number of tissue samples
         dataset_file_names = os.listdir(dataset_dir)
@@ -454,6 +454,11 @@ def load_merged_data(
             # Update the command embeddings dictionary
             command_embeddings_dict.update(train_command_embeddings_dict)
             
+            # Add the class occurence ratio to the class_occ_ratio_dict
+            for command, _ in train_datasets[-1].command_embeddings_dict.values():
+                class_occ_cnt_dict[command] += 1
+                class_occ_cnt_dict["in_total"] += 1
+
         else: 
             test_datasets.append(SequenceDataset(
                         "test",
@@ -477,7 +482,7 @@ def load_merged_data(
             # Get the command embeddings for the test datasets (should be the same as for train and val datasets)
             test_command_embeddings_dict = test_datasets[-1].command_embeddings_dict
             command_embeddings_dict.update(test_command_embeddings_dict)
-            
+
     # ----------------------------- Construct the dataloaders -------------------------------
     
     if dagger_ratio is not None and not test_only:
@@ -543,6 +548,15 @@ def load_merged_data(
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
+    
+        # Add class weights to the metadata (balanced class weights)
+        total_samples = class_occ_cnt_dict["in_total"]
+        del class_occ_cnt_dict["in_total"]
+        num_classes = len(class_occ_cnt_dict)
+        class_weights = {cls: total_samples / (num_classes * cnt) for cls, cnt in class_occ_cnt_dict.items()}
+        class_weights_tensor = torch.tensor([class_weights[cls] for cls in candidate_texts], dtype=torch.float) # sort the class weights according to the candidate_texts (order for the model labels)
+        ds_metadata_dict["class_weights"] = class_weights_tensor
+        
         return train_dataloader, val_dataloader, ds_metadata_dict
     
     else:
@@ -557,11 +571,12 @@ def load_merged_data(
             num_workers=16,
             prefetch_factor=1,
         )
-        
+
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
+
         return test_dataloader, ds_metadata_dict
 
 
