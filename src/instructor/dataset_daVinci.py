@@ -24,17 +24,28 @@ from instructor.utils import center_crop_resize
 from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get task parameters
 from instructor.utils import DAggerSampler
     
-def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
+def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model, reduced_base_class_set_flag):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
     phase_command_embeddings_dict = {}
-    # TODO: Check if this works for the post training
+    # TODO: Add the spatial/finetuning commands later also with idx in folder name?!
     try: 
         unique_phase_folder_names_sorted = sorted(unique_phase_folder_names, key=lambda x: int(x.split('_')[0]))
     except:
         unique_phase_folder_names_sorted = unique_phase_folder_names
+    
+    if reduced_base_class_set_flag:
+        # TODO: Maybe advance later again (with left, right tube) - or select it via specific subset option
+        instruction_to_phase_idx_mapping = {"grabbing gallbladder": [1], "clipping tube": [2,4,6,10,12,14], "cutting tube": [8,16], "going back to home position": [3,5,7,9,11,13,15,17]} 
+        phase_idx_to_instruction_mapping = {str(phase_idx): instruction for instruction, phase_idx_list in instruction_to_phase_idx_mapping.items() for phase_idx in phase_idx_list}
     for phase_folder_name in unique_phase_folder_names_sorted:
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
-        _, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
+        phase_idx, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
+        if reduced_base_class_set_flag:
+            # Reduce base instruction set (keep finetuining instructions)
+            if phase_idx in phase_idx_to_instruction_mapping:
+                phase_command_prefix = "correcting " if "recovery" in phase_command else "" # Add prefix for recovery phases
+                phase_command = phase_command_prefix + phase_idx_to_instruction_mapping[phase_idx]
+                
         embedding = encode_text(phase_command, encoder, tokenizer, model)
         phase_command_embeddings_dict[phase_folder_name]= (phase_command, embedding)
 
@@ -68,10 +79,12 @@ def extract_candidate_embeddings_and_commands(command_embeddings_dict):
     candidate_embeddings = []
     candidate_texts = []
     for _, (phase_command, phase_embedding) in command_embeddings_dict.items():
-        candidate_embeddings.append(torch.tensor(phase_embedding).squeeze())
-        candidate_texts.append(phase_command)
+        if phase_command not in candidate_texts: # Only add unique commands
+            candidate_texts.append(phase_command)
+            candidate_embeddings.append(torch.tensor(phase_embedding).squeeze())
+        
     
-    return torch.stack(candidate_embeddings), candidate_texts
+    return torch.stack(candidate_embeddings), candidate_texts #, phase_execution_order # TODO: required for eval of further logic (if still using that approach)
 
 def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phase_offset, after_phase_offset):
     # Load the start and end indices for the current demo as the valid range of the demo
@@ -104,6 +117,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         num_episodes=200,
         framewise_transforms=None,
         center_crop_flag=False,
+        reduced_base_class_set_flag=False,
     ):
         super().__init__()
         
@@ -120,6 +134,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.num_episodes = num_episodes
         self.framewise_transforms = framewise_transforms
         self.center_crop_flag = center_crop_flag
+        self.reduced_base_class_set_flag = reduced_base_class_set_flag
         
         # Set the before_phase_offset and after_phase_offset
         dataset_name = os.path.basename(dataset_dir)
@@ -156,7 +171,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         encoder_name = "distilbert"
         tokenizer, model = initialize_model_and_tokenizer(encoder_name)
         unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
-        self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, encoder_name, tokenizer, model)
+        self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, encoder_name, tokenizer, model, reduced_base_class_set_flag)
         del tokenizer, model
         
     def __len__(self):
@@ -180,7 +195,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         # Returns the command embedding and the command for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
             if phase_segment["full_episode_demo_start_idx"] <= target_ts <= phase_segment["full_episode_demo_end_idx"]:
-                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"]
+                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"], # TODO: return here the phase order idx (if still using the logic approach)
         else:
             raise ValueError(f"Could not find command for target_ts {target_ts}.")
 
@@ -273,7 +288,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         image_sequence = torch.stack(image_sequence, dim=0).to(dtype=torch.float32) # Shape: ts, cam, c, h, w
         image_sequence = image_sequence / 255.0
 
-        return image_sequence, command_embedding, command_gt
+        return image_sequence, command_embedding, command_gt # TODO: add later: , phase_order_idx (if still using the logic approach)
 
 
 def load_merged_data(
@@ -290,6 +305,7 @@ def load_merged_data(
     framewise_transforms=None,
     dagger_ratio=None,
     center_crop_flag=False,
+    reduced_base_class_set_flag=False,
 ):
     # TODO: Add later distributed sampler for multi GPU training
     
@@ -302,8 +318,8 @@ def load_merged_data(
     if dagger_ratio is None:
         # TODO: Later reset again to reasonable splits
         # Obtain train/val/test split
-        train_ratio = 4/5 # 0.90
-        val_ratio = 1/5 # 0.05
+        train_ratio = 5/6 # 0.90
+        val_ratio = 1/6 # 0.05
         test_ratio = 1 # - train_ratio - val_ratio
     else:
         train_ratio = 1
@@ -329,6 +345,7 @@ def load_merged_data(
     ds_metadata_dict["dataset_dirs"] = dataset_dirs
     ds_metadata_dict["num_episodes_list"] = num_episodes_list    
     ds_metadata_dict["center_crop_flag"] = center_crop_flag
+    ds_metadata_dict["reduced_base_class_set_flag"] = reduced_base_class_set_flag
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
@@ -400,7 +417,8 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         framewise_transforms,
-                        center_crop_flag)
+                        center_crop_flag,
+                        reduced_base_class_set_flag)
             )
             val_datasets.append(SequenceDataset(
                         "val",
@@ -413,7 +431,8 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         framewise_transforms,
-                        center_crop_flag)
+                        center_crop_flag,
+                        reduced_base_class_set_flag)
             )
             
             # Get dataset statistics
@@ -447,7 +466,8 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         framewise_transforms,
-                        center_crop_flag)
+                        center_crop_flag,
+                        reduced_base_class_set_flag)
             )
             
             # Get dataset statistics
@@ -557,24 +577,26 @@ if __name__ == "__main__":
 
     # Parameters for the test
     dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting") # "base_chole_clipping_cutting" | "debugging"
-    tissue_samples_ids = ["tissue_1"] #, "tissue_4"]
+    tissue_samples_ids = ["tissue_12"]
     camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
     prediction_offset = 0 # Get command for the current timestep
     history_step_size = 1
     num_episodes = 200 # Number of randlomy generated stitched episodes
+    reduced_base_class_set_flag = True
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations
     framewise_transforms = []
-    framewise_transforms.append(transforms.RandomRotation(30))
+    framewise_transforms.append(transforms.RandomRotation(15))
     framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    framewise_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    
     # framewise_transforms.append(v2.RandomPerspective(p=0.5))
     # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
     # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
     # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
     framewise_transforms = transforms.Compose(framewise_transforms)
@@ -590,7 +612,9 @@ if __name__ == "__main__":
         prediction_offset,
         history_step_size,
         num_episodes,
-        framewise_transforms
+        framewise_transforms,
+        center_crop_flag=False,
+        reduced_base_class_set_flag=reduced_base_class_set_flag,
     )
 
     # Sample a random item from the dataset

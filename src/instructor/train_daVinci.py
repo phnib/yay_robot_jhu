@@ -1,8 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len
- 3     --seed 1   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag
 """
 
 import os
@@ -104,7 +103,7 @@ def evaluate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
-def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 10, plot_images_flag=True, log_wandb_flag=True):
+def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 10, plot_images_flag=True, log_wandb_flag=True, reduced_base_class_set_flag=False):
 
     model.eval()
 
@@ -125,28 +124,32 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
             logits, temperature, predicted_embedding = model(images)
             
-            # Only consider current (gt) command and next command for the mask
-            # TODO: Add later also the recovery commands (and spatial commands)
-            # Get a list of the current commands
-            current_gt_command_idx = [model.command_to_index[cmd] for cmd in command_gt]
-            # Save here a mask that will only consider the gt command and the next command (later also recovery commands)
-            current_command_mask = torch.zeros_like(logits)
-            for idx, command_idx in enumerate(current_gt_command_idx):
-                current_command_mask[idx, command_idx] = 1
-                if command_idx < len(model.candidate_texts) - 1:
-                    current_command_mask[idx, command_idx+1] = 1
-                    
-            # Apply softmax and then set everything to 0 using the mask
-            logits_masked = torch.nn.functional.softmax(logits, dim=-1) * current_command_mask 
-            
-            # Get text for each prediction in the batch (masked by the current command)
-            decoded_texts_masked = model.decode_logits(logits_masked, temperature)
+            # TODO: Maybe integrate later again, but would need phase index of the episode
+            if not reduced_base_class_set_flag:
+                # Only consider current (gt) command and next command for the mask
+                # TODO: Add later also the recovery commands (and spatial commands)
+                # Get a list of the current commands
+                current_gt_command_idx = [model.command_to_index[cmd] for cmd in command_gt]
+                # Save here a mask that will only consider the gt command and the next command (later also recovery commands)
+                current_command_mask = torch.zeros_like(logits)
+                for idx, command_idx in enumerate(current_gt_command_idx):
+                    current_command_mask[idx, command_idx] = 1
+                    if command_idx < len(model.candidate_texts) - 1:
+                        current_command_mask[idx, command_idx+1] = 1
+                        
+                # Apply softmax and then set everything to 0 using the mask
+                logits_masked = torch.nn.functional.softmax(logits, dim=-1) * current_command_mask 
+                
+                # Get text for each prediction in the batch (masked by the current command)
+                decoded_texts_masked = model.decode_logits(logits_masked, temperature)
+
             decoded_texts = model.decode_logits(logits, temperature) # Also get the text for the unmasked logits
 
             # Store the ground truth and predicted commands for the confusion matrix
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
-            all_decoded_texts_masked.extend(decoded_texts_masked)
+            if not reduced_base_class_set_flag:
+                all_decoded_texts_masked.extend(decoded_texts_masked)
 
             if not one_hot_flag:
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
@@ -184,8 +187,8 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
         os.makedirs(conf_matrix_folder_path, exist_ok=True)
     save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_unmasked_{current_epoch}.png")
     log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag, add_info="Unmasked")
-    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_masked_{current_epoch}.png")
-    log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("Unmasked", "Masked"), log_wandb_flag, add_info="Masked")
+    if not reduced_base_class_set_flag:
+        log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("Unmasked", "Masked"), log_wandb_flag, add_info="Masked")
 
     # Compute metrics for unmasked and masked predictions
     print()
@@ -201,6 +204,9 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
             wandb.log({f"{name} F1 Score": f1_score_curr_epoch})
         
         print(f"Epoch {current_epoch}: {name} Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name} F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+        
+        if reduced_base_class_set_flag:
+            break # Only compute the metrics for the unmasked predictions when using the reduced base class set
 
 # ----------------------------
 
@@ -455,6 +461,7 @@ if __name__ == "__main__":
     parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
     parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=10)
     parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"])
+    parser.add_argument('--reduced_base_class_set_flag', action='store_true', help='Use a reduced set of base classes')
     parser.add_argument('--backbone_model_name', action='store', type=str, help='backbone_model_name', default="clip")
     # gsvit - possible weights: general | cholecystectomy | imagenet
     # resnet - possible weights: imagenet | mocov2 | simclr | swav | dino 
@@ -488,7 +495,7 @@ if __name__ == "__main__":
     framewise_transforms = []
     framewise_transforms.append(transforms.RandomRotation(15))
     framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.8, 1.0))]))
+    framewise_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
     
     # framewise_transforms.append(v2.RandomPerspective(p=0.5))
     # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
@@ -515,6 +522,7 @@ if __name__ == "__main__":
             framewise_transforms=framewise_transforms,
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
+            reduced_base_class_set_flag=args.reduced_base_class_set_flag,
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -531,6 +539,7 @@ if __name__ == "__main__":
             framewise_transforms=framewise_transforms,
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
+            reduced_base_class_set_flag=args.reduced_base_class_set_flag,
         )
     else:
         test_dataloader, ds_metadata_dict = load_merged_data(
@@ -547,6 +556,7 @@ if __name__ == "__main__":
             framewise_transforms=framewise_transforms,
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
+            reduced_base_class_set_flag=args.reduced_base_class_set_flag,
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -601,8 +611,6 @@ if __name__ == "__main__":
         if latest_ckpt:
             print(f"\nLoading checkpoint: {latest_ckpt}")
             latest_ckpt_dict = torch.load(latest_ckpt, map_location=device).state_dict()
-            # Rename everything with prefix "clip_model" to backbone_model # TODO: Remove later again, once not having any "clip_model" ckpts anymore
-            latest_ckpt_dict = {k.replace("clip_model", "backbone_model"): v for k, v in latest_ckpt_dict.items()}
             model.load_state_dict(latest_ckpt_dict)
         else:
             print("\nNo checkpoint found.")
@@ -623,7 +631,8 @@ if __name__ == "__main__":
     # Test the model using the latest checkpoint - don't train
     if args.test_only_flag:
         latest_idx = next_idx-1
-        test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, args.ckpt_dir, log_wandb_flag=args.log_wandb)
+        test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, args.ckpt_dir, 
+             log_wandb_flag=args.log_wandb, reduced_base_class_set_flag=args.reduced_base_class_set_flag)
         exit()
 
     # Training loop
@@ -639,8 +648,9 @@ if __name__ == "__main__":
             val_loss = evaluate(model, val_dataloader, criterion, device)
             
             # Test the model and log success rate every 200 epochs
-            if epoch % args.validation_interval == 0 and (epoch > 0 or args.dagger_ratio is not None):
-                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, plot_images_flag=args.plot_val_images_flag, log_wandb_flag=args.log_wandb)
+            if (epoch + 1) % args.validation_interval == 0:
+                test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, plot_images_flag=args.plot_val_images_flag, 
+                     log_wandb_flag=args.log_wandb, reduced_base_class_set_flag=args.reduced_base_class_set_flag)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
 
