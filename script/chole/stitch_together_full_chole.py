@@ -38,7 +38,7 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
         # Iterate through each of phase folders
         for phase_idx in range(1, num_phases + 1):
             # Get the current phase folder
-            phase_folder_start = f"{phase_idx}_*"        
+            phase_folder_start = f"{phase_idx}_*[^recovery]" # TODO: Filter here out the recovery states (later randomly chooose the recovery phases or the normal one)
             try:   
                 phase_folder_path = list(tissue_folder_path.glob(phase_folder_start))[0]
             except IndexError:
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     # Define the parameters for the video generation
     num_videos = 1
     num_phases = 17
-    tissue = 4  # tissue_1 has no continuous phases, so we are using >= tissue_4
+    tissue = 12  # tissue_1 has no continuous phases, so we are using >= tissue_4
     before_phase_offset, after_phase_offset = 10, 10
     phase_text_flag = False
     also_right_camera_flag = False

@@ -4,7 +4,7 @@ import json
 import cv2
 import pandas as pd
 
-def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset = 5, before_phase_offset = 5):
+def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset = 5, before_phase_offset = 5, with_label_flag=True, desired_camera_name=None):
     
     # Define the final video path for each run
     final_video_path = Path(output_path) / f"all_demos_combined_tissue_{tissue_idx}_{timestamp}.avi"
@@ -61,14 +61,17 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
                 images = []
                 widths = []
                 # Get image for both wrist cameras and left image from stereo camera 
-                for sub_folder, suffix in [('endo_psm2', '_psm2.jpg'), 
+                camera_name_suffix_mapping = [('endo_psm2', '_psm2.jpg'), 
                                             ('left_img_dir', '_left.jpg'), 
-                                            ('endo_psm1', '_psm1.jpg')]:
+                                            ('endo_psm1', '_psm1.jpg')]
+                if desired_camera_name:
+                    camera_name_suffix_mapping = [(camera_name, camera_name_suffix) for camera_name, camera_name_suffix in camera_name_suffix_mapping if camera_name == desired_camera_name]
+                for sub_folder, suffix in camera_name_suffix_mapping:
                     img_path = selected_date_folder_path / sub_folder / f"frame{str(frame_idx).zfill(6)}{suffix}"
                     if img_path.exists():
                         img = cv2.imread(str(img_path))
                         if img is not None:
-                            if sub_folder == 'left_img_dir':
+                            if sub_folder == 'left_img_dir' and not desired_camera_name:
                                 height = 480
                                 width = int(img.shape[1] * (height / img.shape[0]))
                                 img = cv2.resize(img, (width, height))
@@ -83,10 +86,11 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
                 # Concatenate the images
                 final_image = cv2.hconcat(images)
                 
-                # Calculate text position to center over the 'left_img_dir' image
-                text_position_x = 0  # Center text on the second image
-                text = f"Phase: {phase_folder_path.stem}, Demo: {selected_date_folder_path.stem}"
-                cv2.putText(final_image, text, (text_position_x, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                if with_label_flag:
+                    # Calculate text position to center over the 'left_img_dir' image
+                    text_position_x = 0  # Center text on the second image
+                    text = f"Phase: {phase_folder_path.stem}, Demo: {selected_date_folder_path.stem}"
+                    cv2.putText(final_image, text, (text_position_x, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
                 # Write the final image to the video
                 if out is None:
@@ -102,7 +106,9 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
 if __name__ == "__main__":
     from datetime import datetime
     import os
-    
+
+    tissue_indices = [13] # [1,4,5,6,8,12]
+
     # Set the base and output path
     chole_scripts_path = Path(__file__).parent
     base_path =  os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
@@ -110,6 +116,8 @@ if __name__ == "__main__":
     output_path = Path(os.path.join(chole_scripts_path, "AllDemosVideos"))
 
     # Generate the combined video
-    tissue_idx = 8
     before_phase_offset, after_phase_offset = 10, 10
-    create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset, before_phase_offset)
+    with_label_flag=False
+    desired_camera_name = "left_img_dir" # None
+    for tissue_idx in tissue_indices:
+        create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset, before_phase_offset, with_label_flag, desired_camera_name)

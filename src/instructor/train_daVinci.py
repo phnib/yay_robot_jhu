@@ -15,13 +15,14 @@ import torch.optim as optim
 import numpy as np
 import wandb
 import torchvision.transforms as transforms
+from torchvision.transforms import v2
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from PIL import Image, ImageDraw, ImageFont
 from sklearn.manifold import TSNE
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, accuracy_score
 
 # import aloha 
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
@@ -107,12 +108,9 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     model.eval()
 
-    # Initialize variables for the confusion matrix + tsne plots
-    total_correct = 0
-    total_predictions = 0
-
     all_commands_gt = []
     all_decoded_texts = []
+    all_decoded_texts_masked = []
 
     if not one_hot_flag:
         all_predicted_embeddings = []
@@ -126,12 +124,29 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
             images = images.to(device)
 
             logits, temperature, predicted_embedding = model(images)
-            # Get nearest text for each prediction in the batch
-            decoded_texts = model.decode_logits(logits, temperature)
+            
+            # Only consider current (gt) command and next command for the mask
+            # TODO: Add later also the recovery commands (and spatial commands)
+            # Get a list of the current commands
+            current_gt_command_idx = [model.command_to_index[cmd] for cmd in command_gt]
+            # Save here a mask that will only consider the gt command and the next command (later also recovery commands)
+            current_command_mask = torch.zeros_like(logits)
+            for idx, command_idx in enumerate(current_gt_command_idx):
+                current_command_mask[idx, command_idx] = 1
+                if command_idx < len(model.candidate_texts) - 1:
+                    current_command_mask[idx, command_idx+1] = 1
+                    
+            # Apply softmax and then set everything to 0 using the mask
+            logits_masked = torch.nn.functional.softmax(logits, dim=-1) * current_command_mask 
+            
+            # Get text for each prediction in the batch (masked by the current command)
+            decoded_texts_masked = model.decode_logits(logits_masked, temperature)
+            decoded_texts = model.decode_logits(logits, temperature) # Also get the text for the unmasked logits
 
             # Store the ground truth and predicted commands for the confusion matrix
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
+            all_decoded_texts_masked.extend(decoded_texts_masked)
 
             if not one_hot_flag:
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
@@ -153,9 +168,6 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                         log_combined_image(images[img_idx], gt, pred, save_path)
                         if args.log_wandb:
                             wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
-
-                total_correct += int(pred == gt)
-                total_predictions += 1
                 
     # Visualize embeddings
     if not one_hot_flag:
@@ -170,20 +182,25 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     conf_matrix_folder_path = os.path.join(ckpt_dir, "confusion_matrices")
     if not os.path.exists(conf_matrix_folder_path):
         os.makedirs(conf_matrix_folder_path, exist_ok=True)
-    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_{current_epoch}.png")
-    log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag)
+    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_unmasked_{current_epoch}.png")
+    log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag, add_info="Unmasked")
+    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_masked_{current_epoch}.png")
+    log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("Unmasked", "Masked"), log_wandb_flag, add_info="Masked")
 
-    # Compute the success rate -> accurarcy
-    accurarcy_curr_epoch = total_correct / total_predictions
-    if args.log_wandb:
-        wandb.log({"Accurarcy": accurarcy_curr_epoch})
+    # Compute metrics for unmasked and masked predictions
+    print()
+    for name, decoded_texts in zip(["Unmasked", "Masked"], [all_decoded_texts, all_decoded_texts_masked]):
+        # Compute the success rate -> accurarcy
+        accurarcy_curr_epoch = accuracy_score(all_commands_gt, decoded_texts)
+        if args.log_wandb:
+            wandb.log({f"{name} Accurarcy": accurarcy_curr_epoch})
+            
+        # Compute the (macro) F1 score
+        f1_score_curr_epoch = f1_score(all_commands_gt, decoded_texts, average='macro')
+        if args.log_wandb:
+            wandb.log({f"{name} F1 Score": f1_score_curr_epoch})
         
-    # Compute the (macro) F1 score
-    f1_score_curr_epoch = f1_score(all_commands_gt, all_decoded_texts, average='macro')
-    if args.log_wandb:
-        wandb.log({"F1 Score": f1_score_curr_epoch})
-        
-    print(f"\nEpoch {current_epoch}: Accuracy = {accurarcy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+        print(f"Epoch {current_epoch}: {name} Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name} F1 Score = {f1_score_curr_epoch * 100:.2f}%")
 
 # ----------------------------
 
@@ -226,7 +243,7 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
     canvas.save(save_path)
 
 
-def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, save_path=None, log_wandb_flag=True):
+def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, save_path=None, log_wandb_flag=True, add_info="Unmasked"):
     """
     Compute the confusion matrix for each criteria.
     
@@ -272,9 +289,9 @@ def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, s
     
     # Log the confusion matrix with WandB
     if epoch is not None:
-        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch})")
+        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix ({add_info}) (Epoch {epoch})")
     else:
-        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix")
+        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix ({add_info})")
     if log_wandb_flag:
         if split_name is None:
             wandb.log({"confusion_matrix": fig})
@@ -343,7 +360,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 # -----------------------------
 
-def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, center_crop_flag):
+def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -360,6 +377,9 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         one_hot_flag=one_hot_flag,
         camera_names=camera_names,
         center_crop_flag=center_crop_flag,
+        backbone_model_name=backbone_model_name,
+        model_init_weights=model_init_weights,
+        freeze_backbone_until=freeze_backbone_until,
     ).to(device)
     return model
 
@@ -435,7 +455,13 @@ if __name__ == "__main__":
     parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
     parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=10)
     parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"])
-
+    parser.add_argument('--backbone_model_name', action='store', type=str, help='backbone_model_name', default="clip")
+    # gsvit - possible weights: general | cholecystectomy | imagenet
+    # resnet - possible weights: imagenet | mocov2 | simclr | swav | dino 
+    # endovit - possible weights: endo700k | imagenet
+    parser.add_argument('--model_init_weights', action='store', type=str, help='model_init_weights', default="imagenet")
+    parser.add_argument('--freeze_backbone_until', action='store', type=str, help='freeze_backbone_until', default="all") 
+    
     args = parser.parse_args()
 
     # Set seed
@@ -463,10 +489,12 @@ if __name__ == "__main__":
     framewise_transforms.append(transforms.RandomRotation(15))
     framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
     framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.8, 1.0))]))
+    
     # framewise_transforms.append(v2.RandomPerspective(p=0.5))
     # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
     # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
     # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
     framewise_transforms = transforms.Compose(framewise_transforms)
@@ -510,7 +538,8 @@ if __name__ == "__main__":
             num_episodes_list=num_episodes_list,
             camera_names=camera_names,
             camera_file_suffixes=camera_file_suffixes,
-            batch_size=args.batch_size,
+            batch_size_train=args.batch_size,
+            batch_size_val=args.batch_size,
             history_len=args.history_len,
             prediction_offset=args.prediction_offset,
             history_step_size=args.history_step_size,
@@ -553,7 +582,9 @@ if __name__ == "__main__":
     # Build the model
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]    
-    model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag)
+    model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
+                             candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
+                             args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = torch.nn.CrossEntropyLoss()
 
@@ -569,7 +600,10 @@ if __name__ == "__main__":
             latest_ckpt, next_idx = latest_checkpoint(args.ckpt_dir)
         if latest_ckpt:
             print(f"\nLoading checkpoint: {latest_ckpt}")
-            model.load_state_dict(torch.load(latest_ckpt, map_location=device).state_dict())
+            latest_ckpt_dict = torch.load(latest_ckpt, map_location=device).state_dict()
+            # Rename everything with prefix "clip_model" to backbone_model # TODO: Remove later again, once not having any "clip_model" ckpts anymore
+            latest_ckpt_dict = {k.replace("clip_model", "backbone_model"): v for k, v in latest_ckpt_dict.items()}
+            model.load_state_dict(latest_ckpt_dict)
         else:
             print("\nNo checkpoint found.")
             next_idx = 0

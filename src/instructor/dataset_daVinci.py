@@ -40,7 +40,7 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
 
     return phase_command_embeddings_dict
 
-def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio):
+def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio, test_only_flag):
     # Calculate the number of samples for each set
     if dataset_dir == "base_chole_clipping_cutting":
         tissue_names.remove("tissue_1") # Remove tissue_1 from the dataset as not complete
@@ -57,6 +57,9 @@ def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test
     train_tissue_names = [tissue_names[idx] for idx in all_indices[:num_train]]
     val_tissue_names = [tissue_names[idx] for idx in all_indices[num_train:num_train + num_val]]
     test_tissue_names = [tissue_names[idx] for idx in all_indices[num_train + num_val:]]
+
+    if len(test_tissue_names) == 0 and test_only_flag:
+        test_tissue_names = val_tissue_names
 
     return train_tissue_names, val_tissue_names, test_tissue_names
 
@@ -278,8 +281,8 @@ def load_merged_data(
     num_episodes_list,
     camera_names,
     camera_file_suffixes,
-    batch_size_train,
-    batch_size_val,
+    batch_size_train=32,
+    batch_size_val=32,
     history_len=1,
     prediction_offset=10,
     history_step_size=1,
@@ -299,9 +302,9 @@ def load_merged_data(
     if dagger_ratio is None:
         # TODO: Later reset again to reasonable splits
         # Obtain train/val/test split
-        train_ratio = 2/3 # 0.90
-        val_ratio = 1/3 # 0.05
-        test_ratio = 1 - train_ratio - val_ratio
+        train_ratio = 4/5 # 0.90
+        val_ratio = 1/5 # 0.05
+        test_ratio = 1 # - train_ratio - val_ratio
     else:
         train_ratio = 1
         val_ratio = test_ratio = 0
@@ -341,7 +344,7 @@ def load_merged_data(
         if dagger_ratio is None:
             # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
             train_tissues, val_tissues, test_tissues = split_tissue_samples(
-                dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio
+                dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio, test_only
             )
             print(f"\nDataset: {dataset_dir}")
             print(f"Train tissues: {train_tissues}")
@@ -528,7 +531,7 @@ def load_merged_data(
 
         test_dataloader = DataLoader(
             merged_test_dataset,
-            batch_size=1,
+            batch_size=batch_size_val,
             shuffle=False,
             pin_memory=True,
             num_workers=16,

@@ -1,0 +1,3 @@
+[submodule "src/instructor/submodules/gsvit_submodule/gsvit"]
+	path = src/instructor/submodules/gsvit_submodule/gsvit
+	url = https://github.com/SamuelSchmidgall/GSViT.git

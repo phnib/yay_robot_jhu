@@ -4,7 +4,6 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
-from clip import load
 import torchvision.transforms as transforms
 import random
 
@@ -14,16 +13,7 @@ if path_to_yay_robot:
     sys.path.append(os.path.join(path_to_yay_robot, 'src'))
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
-
-
-clip_transform = transforms.Compose(
-    [
-        # transforms.Resize((224, 224)), already done in dataset (more performant)
-        transforms.Normalize(
-            (0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)
-        ),
-    ]
-)
+from instructor.backbone_models_daVinci import extract_features, init_feature_extractor_model, preprocess_inputs, init_processor
 
 # TODO: Add here the selection of the backend model
 class Instructor(nn.Module):
@@ -44,21 +34,29 @@ class Instructor(nn.Module):
         command_to_index=None,
         num_cameras=4,
         one_hot_flag=False,
+        backbone_model_name="clip",
+        model_init_weights=None,
+        freeze_backbone_until="all"
     ):
         super().__init__()
         self.one_hot_flag = one_hot_flag
 
-        # TODO: Call here backbone model init
-        # Load the pretrained CLIP model
-        self.clip_model, self.clip_text_model = load("ViT-B/32", device=device)
-        # TODO: Add here finetuning flag
-        for param in self.clip_model.parameters():
-            param.requires_grad = False  # Freeze the CLIP model parameters
-
+        # Load pretrained backbone model
+        self.backbone_model, self.backbone_output_dim = init_feature_extractor_model(backbone_model_name, model_init_weights, device, freeze_backbone_until)
+        self.processor = init_processor(backbone_model_name, model_init_weights)
+        
+        # TODO: Check if I want to keep that
+        # if backbone_model_name == "resnet":
+        #     self.downscale_mlp = nn.Sequential(
+        #         nn.Linear(self.backbone_output_dim, hidden_size),
+        #         nn.ReLU()
+        #     )
+        #     self.backbone_output_dim = hidden_size
+        
         # Transformer for processing sequences of image embeddings
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model=self.clip_model.visual.output_dim, # TODO: Add here the output dim of the backbone model
+                d_model=self.backbone_output_dim,
                 nhead=num_heads,
                 dim_feedforward=hidden_size,
                 batch_first=True
@@ -70,7 +68,7 @@ class Instructor(nn.Module):
             output_size = len(candidate_texts)
 
         self.mlp = nn.Sequential(
-            nn.Linear(self.clip_model.visual.output_dim, hidden_size),
+            nn.Linear(self.backbone_output_dim, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, output_size),
         )
@@ -80,7 +78,7 @@ class Instructor(nn.Module):
 
         # Positional Encoding
         self.positional_encoding = self.create_sinusoidal_embeddings(
-            self.clip_model.visual.output_dim, (history_len + 1) * num_cameras
+            self.backbone_output_dim, (history_len + 1) * num_cameras
         )
 
         self.history_len = history_len
@@ -91,6 +89,10 @@ class Instructor(nn.Module):
         self.candidate_embeddings = candidate_embeddings 
         self.candidate_texts = candidate_texts
         self.command_to_index = command_to_index 
+        self.backbone_model_name = backbone_model_name
+        self.model_init_weights = model_init_weights
+        self.freeze_backbone_until = freeze_backbone_until
+        self.device = device
 
         total, trainable = count_parameters(self)
         print(f"Total parameters: {total / 1e6:.2f}M")
@@ -109,21 +111,23 @@ class Instructor(nn.Module):
             images = torch.cat([padding, images], dim=1)
             timesteps = self.history_len + 1  # Update timesteps to reflect the new length
 
-        # Reshape images to (b*t*k, c, h, w) for processing through CLIP
+        # Reshape images to (b*t*k, c, h, w) for processing through backbone model
         images_reshaped = images.reshape(batch_size * timesteps * num_cameras, c, h, w)
 
-        # Apply transformations for CLIP
-        images_transformed = clip_transform(
-            images_reshaped
-        )  # CLIP model expects images to be normalized and resized to 224*224
+        # Apply transformations for backbone model --> backbone model expects images to be normalized and resized to 224*224
+        images_transformed = preprocess_inputs(images_reshaped, self.backbone_model_name, self.model_init_weights, self.device, self.processor) 
 
-        # Get image features from CLIP
-        image_features = self.clip_model.encode_image(images_transformed)
+        # Get image features from backbone model
+        image_features = extract_features(self.backbone_model, self.backbone_model_name, self.model_init_weights, images_transformed)
 
         # Reshape the image features to [batch_size, timesteps*cameras, feature_dim]
         image_features_reshaped = image_features.reshape(
             batch_size, timesteps * num_cameras, -1
         ).to(torch.float32)
+
+        # # TODO: Check if this improves the performance
+        # if self.backbone_model_name == "resnet":
+        #     image_features_reshaped = self.downscale_mlp(image_features_reshaped) 
 
         # Add positional encoding
         image_features_reshaped += self.positional_encoding[
