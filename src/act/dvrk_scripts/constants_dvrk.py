@@ -12,12 +12,13 @@ Make sure action mode is exactly what you want!
 # DATA_DIR = "/home/imerse/chole_ws/data"
 DATA_DIR = os.getenv("PATH_TO_DATASET")
 TASK_CONFIGS = {
-    'base_chole_clipping_cutting':{
-        'dataset_dir': DATA_DIR + "/base_chole_clipping_cutting/",
-        'num_episodes': 224,
-        'tissue_samples_ids': [1],
+    'phantom_chole':{
+        'dataset_dir': DATA_DIR + "/phantom_chole/",
+        'num_episodes': 1444,
+        'tissue_samples_ids': [1, 2, 3],
         'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
+        'cutting_action_pad_size': 10,
         'action_mode': ['hybrid', 
                         {'max_': np.array([4.23075504e-04, 9.21509775e-04, 6.13676510e-04, 1.00000000e+00,
                                             4.95288465e-03, 2.07531063e-03, 3.96580366e-03, 1.00000000e+00,

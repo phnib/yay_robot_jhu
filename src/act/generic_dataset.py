@@ -40,6 +40,13 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
     phase_command_embeddings_dict = {}
     for phase_folder_name in tqdm(unique_phase_folder_names, desc="Embedding phase commands"):
+        if phase_folder_name.endswith("_recovery"):
+            phase_folder_name = phase_folder_name[:-9]
+        elif phase_folder_name.startswith("ACTUAL_CUTTING"):
+            if phase_folder_name.endswith("_left"):
+                phase_folder_name = "8_go_to_the_cutting_position_left_tube"
+            elif phase_folder_name.endswith("_right"):
+                phase_folder_name = "16_go_to_the_cutting_position_right_tube"
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
         _, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
         embedding = encode_text(phase_command, encoder, tokenizer, model)
@@ -238,7 +245,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.action_mode = task_config['action_mode'][0]
         self.norm_scheme = task_config['norm_scheme']
         self.is_sim = None
-
+        self.cutting_action_pad_size = task_config['cutting_action_pad_size']
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
         self.command_embeddings_dict = {}
@@ -260,27 +267,44 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                 for demo_sample in demo_samples:
                     if demo_sample == "Corrections":
                         demo_samples.remove(demo_sample)
-                self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
+                # if phase_sample.endswith("_recovery"):
+                #     # print(phase_sample)
+                #     phase_sample = phase_sample[:-9]
+
+                # else:
+                    # tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
+                if tissue_sample_name not in self.tissue_phase_demo_dict:
+                    self.tissue_phase_demo_dict[tissue_sample_name] = {}
+                # Add or update the demo samples in the dictionary
+                self.tissue_phase_demo_dict[tissue_sample_name].setdefault(phase_sample, []).extend(demo_samples)
+
             ## create language embeddings
             if self.use_language:
                 self.language_encoder = language_encoder
-                # tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
+                tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
                 unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
 
                 # print("phase:", unique_phase_folder_names)
-                # print("\ngenerating command embeddings...\n")
-                # self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, self.language_encoder, tokenizer, model)
-                json_name = f"candidate_embeddings_{self.language_encoder}.json"
-                json_path = os.path.join(tissue_sample_dir_path, json_name)
+                print("\ngenerating command embeddings...\n")
+                self.command_embeddings_dict[tissue_sample_name] = generate_command_embeddings(unique_phase_folder_names, self.language_encoder, tokenizer, model)
+                # json_name = f"candidate_embeddings_{self.language_encoder}.json"
+                # json_path = os.path.join(tissue_sample_dir_path, json_name)
 
-                self.command_embeddings_dict[tissue_sample_name] = get_command_embeddings_from_json(unique_phase_folder_names, json_path)
+                # self.command_embeddings_dict[tissue_sample_name] = generate_command_embeddings(unique_phase_folder_names, json_path)
                 # print("embeddings:", self.command_embeddings_dict)
 
-                # del tokenizer, model
+                del tokenizer, model
                 # print(f"   {phase_sample}, {demo_samples}\n")
-        # print("num of tissues:", len(self.tissue_phase_demo_dict.keys()))
+        print("num of tissues:", len(self.tissue_phase_demo_dict.keys()))
 
-        # print("num of samples:", sum(len(samples) for samples in self.tissue_phase_demo_dict.values()))
+        print("num of samples:", sum(len(samples) for samples in self.tissue_phase_demo_dict.values()))
+        total_count = 0
+        for phase_dict in self.tissue_phase_demo_dict.values():
+            for demo_samples in phase_dict.values():
+                total_count += len(demo_samples)
+
+        print("total count:", total_count)
+
         self.all_samples = [(tissue_sample, phase, sample) 
                     for tissue_sample in self.tissue_phase_demo_dict
                     for phase in self.tissue_phase_demo_dict[tissue_sample]
@@ -439,16 +463,28 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         csv = pd.read_csv(csv_path)
         episode_len = len(csv)
 
+
+
         start_ts = np.random.choice(episode_len)
-        
-        image_path_l = os.path.join(dataset_path, "left_img_dir",
-                                  "frame{:06d}".format(start_ts) + "_left.jpg")
-        image_path_r = os.path.join(dataset_path, "right_img_dir",
-                                  "frame{:06d}".format(start_ts) + "_right.jpg")
-        image_path_lw = os.path.join(dataset_path, "endo_psm2",
-                                  "frame{:06d}".format(start_ts) + "_psm2.jpg")
-        image_path_rw = os.path.join(dataset_path, "endo_psm1",
-                                  "frame{:06d}".format(start_ts) + "_psm1.jpg")
+        if (phase.startswith("8_go_to_the_cutting_position_left_tube") or phase.startswith("16_go_to_the_cutting_position_right_tube")) and start_ts >= episode_len - self.cutting_action_pad_size:
+            img_idx = episode_len - self.cutting_action_pad_size - 1
+            image_path_l = os.path.join(dataset_path, "left_img_dir",
+                                    "frame{:06d}".format(img_idx) + "_left.jpg")
+            image_path_r = os.path.join(dataset_path, "right_img_dir",
+                                    "frame{:06d}".format(img_idx) + "_right.jpg")
+            image_path_lw = os.path.join(dataset_path, "endo_psm2",
+                                    "frame{:06d}".format(img_idx) + "_psm2.jpg")
+            image_path_rw = os.path.join(dataset_path, "endo_psm1",
+                                    "frame{:06d}".format(img_idx) + "_psm1.jpg")
+        else:
+            image_path_l = os.path.join(dataset_path, "left_img_dir",
+                                    "frame{:06d}".format(start_ts) + "_left.jpg")
+            image_path_r = os.path.join(dataset_path, "right_img_dir",
+                                    "frame{:06d}".format(start_ts) + "_right.jpg")
+            image_path_lw = os.path.join(dataset_path, "endo_psm2",
+                                    "frame{:06d}".format(start_ts) + "_psm2.jpg")
+            image_path_rw = os.path.join(dataset_path, "endo_psm1",
+                                    "frame{:06d}".format(start_ts) + "_psm1.jpg")
         
         img_l = cv2.imread(image_path_l)
         img_r = cv2.imread(image_path_r)
@@ -547,6 +583,13 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         # action_data = (action_data - mean) / std
       
         if self.use_language:
+            if phase.endswith("_recovery"):
+                phase = phase[:-9]
+            elif phase.startswith("ACTUAL_CUTTING"):
+                if phase.endswith("_left"):
+                    phase = "8_go_to_the_cutting_position_left_tube"
+                elif phase.endswith("_right"):
+                    phase = "16_go_to_the_cutting_position_right_tube"
             phase_command, embedding = self.command_embeddings_dict[tissue_sample][phase]
             command_embedding = torch.tensor(embedding).squeeze()
             return image_data, qpos_data, action_data, is_pad, command_embedding
