@@ -592,8 +592,8 @@ if __name__ == "__main__":
     # set_seed(seed)
 
     # Parameters for the test
-    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting") # "base_chole_clipping_cutting" | "debugging"
-    tissue_samples_ids = ["tissue_12"]
+    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "phantom_chole") # "base_chole_clipping_cutting" "phantom_chole" "debugging"
+    tissue_samples_ids = ["phantom_3"] # "phantom_1" "tissue_12"
     camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
