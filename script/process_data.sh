@@ -1,10 +1,10 @@
 #!/bin/bash
 
-DATASETS=("phantom_1")  #tissue_1
-PATH_TO_DATASET="/home/imerse/chole_ws/data/base_chole_clipping_cutting"
+DATASETS=("phantom_1" "phantom_2" "phantom_3")  #tissue_1
+PATH_TO_DATASET="/home/imerse/chole_ws/data/phantom_chole"
 
 # Encoding instructions
-for DATASET in "${   DATASETS[@]}"; do
+for DATASET in "${DATASETS[@]}"; do
     # python script/encode_instruction.py --dataset_dir $PATH_TO_DATASET/$DATASET --encoder distilbert
     python encode_instruction.py --dataset_dir $PATH_TO_DATASET/$DATASET --encoder distilbert --from_count
 done
