@@ -45,14 +45,6 @@ class Instructor(nn.Module):
         self.backbone_model, self.backbone_output_dim = init_feature_extractor_model(backbone_model_name, model_init_weights, device, freeze_backbone_until)
         self.processor = init_processor(backbone_model_name, model_init_weights)
         
-        # TODO: Check if I want to keep that
-        # if backbone_model_name == "resnet":
-        #     self.downscale_mlp = nn.Sequential(
-        #         nn.Linear(self.backbone_output_dim, hidden_size),
-        #         nn.ReLU()
-        #     )
-        #     self.backbone_output_dim = hidden_size
-        
         # Transformer for processing sequences of image embeddings
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -124,10 +116,6 @@ class Instructor(nn.Module):
         image_features_reshaped = image_features.reshape(
             batch_size, timesteps * num_cameras, -1
         ).to(torch.float32)
-
-        # # TODO: Check if this improves the performance
-        # if self.backbone_model_name == "resnet":
-        #     image_features_reshaped = self.downscale_mlp(image_features_reshaped) 
 
         # Add positional encoding
         image_features_reshaped += self.positional_encoding[

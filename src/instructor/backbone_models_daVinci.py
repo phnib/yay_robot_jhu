@@ -151,10 +151,27 @@ def load_resnet_fe(model_init_weights):
     
     return model, num_features
     
-def load_clip_fe(device):
-    # Load the CLIP model
-    model = load("ViT-B/32", device=device)[0]
-    
+def load_clip_fe(model_init_weights, device):    
+    if model_init_weights == "imagenet":
+        # Load the CLIP model
+        model = load("ViT-B/32", device=device)[0]
+    elif model_init_weights == "sda":
+        # Load the SDA-CLIP model
+        model_weights_path = Path(__file__).resolve().parent / "submodules" / "clip" / "models" / "soft_task.pt"
+        model = load("ViT-B/16", device=device)[0]
+        sda_clip_state_dict = torch.load(model_weights_path, map_location=device)["model_state_dict"]
+        model.load_state_dict(sda_clip_state_dict)
+        
+        # # Print all the layers with their indices # TODO: Remove me later
+        # for idx, (name, module) in enumerate(model.named_modules()):
+        #     print(f"Index: {idx}, Name: {name}, Module: {module}")
+        
+        # print("--------------------")
+        
+        # for layer_idx, param in enumerate(model.parameters()): # TODO: Remove me later
+        #     print(f"Layer index: {layer_idx}")
+            
+        
     # Set the number of features
     num_features = model.visual.output_dim
     
@@ -174,13 +191,18 @@ def init_feature_extractor_model(fe_model_name, model_init_weights, device, free
         fe, num_features = load_resnet_fe(model_init_weights)
     elif fe_model_name == "clip":
         # Load a pre-trained CLIP model
-        fe, num_features = load_clip_fe(device)
+        fe, num_features = load_clip_fe(model_init_weights, device)
         
     # Freeze the feature extractor
     for layer_idx, param in enumerate(fe.parameters()):
         if freeze_fe_until_layer != "all" and (freeze_fe_until_layer == "none" or layer_idx == freeze_fe_until_layer):
             break
         param.requires_grad = False
+        
+    # TODO: Integrate me differently later
+    # Unfreeze the final transformer block (11th) and the final LayerNorm layer
+    for param in fe.visual.transformer.resblocks[11].parameters():
+        param.requires_grad = True
         
     return fe, num_features
 
@@ -231,10 +253,11 @@ def preprocess_inputs_resnet(images, model_init_weights):
     return normalized_images
    
 def preprocess_inputs_clip(images):
+    
     clip_transform = T.Compose(
         [
             # transforms.Resize((224, 224)), already done in dataset (more performant)
-            T.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            T.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)), # Note: same normalization in SDA-CLIP used
         ]
     )
     normalized_images = clip_transform(images)
