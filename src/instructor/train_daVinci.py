@@ -459,7 +459,7 @@ if __name__ == "__main__":
     parser.add_argument('--load_best_ckpt_flag', action='store_true', help='Use the best checkpoint based on the validation loss if continue training on available checkpoint')
     parser.add_argument('--center_crop_flag', action='store_true', help='Center crop the images during preprocessing, preventing unnatural rescaling, but potentially cutting off important information')
     parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
-    parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=10)
+    parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=2)
     parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"])
     parser.add_argument('--reduced_base_class_set_flag', action='store_true', help='Use a reduced set of base classes')
     parser.add_argument('--backbone_model_name', action='store', type=str, help='backbone_model_name', default="clip")
@@ -492,20 +492,28 @@ if __name__ == "__main__":
     # ---------------------- Define dataloaders and model ----------------------
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
-    # TODO: Decide for the best augmentations - maybe load only these defined in the args?!
-    framewise_transforms = []
-    framewise_transforms.append(transforms.RandomRotation(15))
-    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    framewise_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    # TODO: Decide for the best augmentations - maybe load only these defined in the args - rand, trivial, augmix?!
+    input_transforms = []
     
-    # framewise_transforms.append(v2.RandomPerspective(p=0.5))
-    # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
-    # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
-    # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
-    # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
-    # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
-    framewise_transforms = transforms.Compose(framewise_transforms)
+    # Note: Automatic augmentations
+    input_transforms.append(transforms.RandAugment())
+    # input_transforms.append(transforms.TrivialAugmentWide())
+    # input_transforms.append(transforms.AugMix())
+    
+    # Note: Manual augmentations
+    # input_transforms.append(transforms.RandomRotation(15))
+    # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    # input_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    
+    # input_transforms.append(transforms.RandomApply([transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)], p=0.75))
+    # input_transforms.append(v2.RandomPerspective(p=0.5))
+    # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    # input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # input_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    # input_transforms.append(transforms.RandomGrayscale(p=0.2))
+    input_transforms = transforms.Compose(input_transforms)
 
     # Data loading
     if args.dagger_ratio is not None and not args.test_only_flag:
@@ -520,7 +528,7 @@ if __name__ == "__main__":
             prediction_offset=args.prediction_offset,
             history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
-            framewise_transforms=framewise_transforms,
+            input_transforms=input_transforms,
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
@@ -537,7 +545,7 @@ if __name__ == "__main__":
             prediction_offset=args.prediction_offset,
             history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
-            framewise_transforms=framewise_transforms,
+            input_transforms=input_transforms,
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
@@ -554,7 +562,7 @@ if __name__ == "__main__":
             prediction_offset=args.prediction_offset,
             history_step_size=args.history_step_size,
             test_only=args.test_only_flag,
-            framewise_transforms=framewise_transforms,
+            input_transforms=input_transforms,
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
@@ -592,7 +600,8 @@ if __name__ == "__main__":
 
     # Build the model
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
-    candidate_texts = ds_metadata_dict["candidate_texts"]    
+    candidate_texts = ds_metadata_dict["candidate_texts"]  
+    print(f"\nLanguage instructions: {candidate_texts}\n")  
     model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until)
@@ -662,8 +671,6 @@ if __name__ == "__main__":
             wandb.log({"Epoch Train Loss": train_loss})
             if args.dagger_ratio is None:
                 wandb.log({"Epoch Eval Loss": val_loss})
-        else:
-            print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
 
         # -------------------------- Checkpoints --------------------------
 

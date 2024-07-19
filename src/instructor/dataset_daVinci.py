@@ -34,7 +34,7 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
     
     if reduced_base_class_set_flag:
         # TODO: Maybe advance later again (with left, right tube) - or select it via specific subset option
-        instruction_to_phase_idx_mapping = {"grabbing gallbladder": [1], "clipping tube": [2,4,6,10,12,14], "cutting tube": [8,16], "going back to home position": [3,5,7,9,11,13,15,17]} 
+        instruction_to_phase_idx_mapping = {"clipping tube": [1,2,4,6,10,12,14], "cutting tube": [8,16], "going back to home position": [3,5,7,9,11,13,15,17]} # TODO: Maybe add later again: "grabbing gallbladder": [1], 
         phase_idx_to_instruction_mapping = {str(phase_idx): instruction for instruction, phase_idx_list in instruction_to_phase_idx_mapping.items() for phase_idx in phase_idx_list}
     for phase_folder_name in unique_phase_folder_names_sorted:
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
@@ -56,8 +56,8 @@ def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test
         tissue_names.remove("tissue_1") # Remove tissue_1 from the dataset as not complete
             
     num_tissue_samples = len(tissue_names)
-    num_train = math.ceil(train_ratio * num_tissue_samples) 
-    num_val = int(val_ratio * num_tissue_samples) 
+    num_train = int(train_ratio * num_tissue_samples) 
+    num_val = math.ceil(val_ratio * num_tissue_samples) 
 
     # Generate a list of indices and shuffle them
     all_indices = list(range(0, num_tissue_samples))
@@ -114,7 +114,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         prediction_offset=15,
         history_step_size=30,
         num_episodes=200,
-        framewise_transforms=None,
+        input_transforms=None,
         center_crop_flag=False,
         reduced_base_class_set_flag=False,
     ):
@@ -131,7 +131,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.prediction_offset = prediction_offset
         self.history_step_size = history_step_size
         self.num_episodes = num_episodes
-        self.framewise_transforms = framewise_transforms
+        self.input_transforms = input_transforms
         self.center_crop_flag = center_crop_flag
         self.reduced_base_class_set_flag = reduced_base_class_set_flag
         
@@ -149,7 +149,7 @@ class SequenceDataset(torch.utils.data.Dataset):
 
         for tissue_sample_name in tissue_sample_names:
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
-            phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name))]
+            phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name)) and file_name.split('_')[0].isdigit()]
             phases = [phase for phase in phases if "recovery" not in phase]  # TODO: Remove later again, but for now filter recovery phases
             phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
@@ -278,14 +278,15 @@ class SequenceDataset(torch.utils.data.Dataset):
                 image_dict[cam_name] for cam_name in self.camera_names
             ]
             all_cam_images = torch.stack(all_cam_images, dim=0)
-            if self.split_name == "train" and self.framewise_transforms is not None:
-                all_cam_images_transformed = self.framewise_transforms(all_cam_images) # Apply same transform for all camera images
-                image_sequence.append(all_cam_images_transformed)
-            else:
-                image_sequence.append(all_cam_images)
+            image_sequence.append(all_cam_images)
 
-        image_sequence = torch.stack(image_sequence, dim=0).to(dtype=torch.float32) # Shape: ts, cam, c, h, w
-        image_sequence = image_sequence / 255.0
+        # TODO: Check if this applies the same transform for all camera images # Alternative: Apply the same transform for all camera images / framewise (maybe by arg)
+        image_sequence = torch.stack(image_sequence, dim=0)#.to(dtype=torch.float32) # Shape: ts, cam, c, h, w
+        if self.split_name == "train" and self.input_transforms is not None:
+            image_sequence = image_sequence.view(-1, image_sequence.size(2), image_sequence.size(3), image_sequence.size(4)) # Reshape to (ts*cam, c, h, w) for applying the same transform to all camera images
+            image_sequence = self.input_transforms(image_sequence) 
+            image_sequence = image_sequence.view(-1, len(self.camera_names), image_sequence.size(1), image_sequence.size(2), image_sequence.size(3)) # Reshape back to (ts, cam, c, h, w)
+        image_sequence = image_sequence / 255.0 
 
         return image_sequence, command_embedding, command_gt # TODO: add later: , phase_order_idx (if still using the logic approach)
 
@@ -301,7 +302,7 @@ def load_merged_data(
     prediction_offset=10,
     history_step_size=1,
     test_only=False,
-    framewise_transforms=None,
+    input_transforms=None,
     dagger_ratio=None,
     center_crop_flag=False,
     reduced_base_class_set_flag=False,
@@ -317,9 +318,9 @@ def load_merged_data(
     if dagger_ratio is None:
         # TODO: Later reset again to reasonable splits
         # Obtain train/val/test split
-        train_ratio = 5/6 # 0.90
-        val_ratio = 1/6 # 0.05
-        test_ratio = 1 # - train_ratio - val_ratio
+        train_ratio = 0.9
+        val_ratio = 0.1
+        test_ratio = 0 # 1 - train_ratio - val_ratio
     else:
         train_ratio = 1
         val_ratio = test_ratio = 0
@@ -340,7 +341,7 @@ def load_merged_data(
     ds_metadata_dict["prediction_offset"] = prediction_offset
     ds_metadata_dict["camera_names"] = camera_names
     ds_metadata_dict["test_only"] = test_only
-    ds_metadata_dict["framewise_transforms"] = framewise_transforms
+    ds_metadata_dict["input_transforms"] = input_transforms
     ds_metadata_dict["dataset_dirs"] = dataset_dirs
     ds_metadata_dict["num_episodes_list"] = num_episodes_list    
     ds_metadata_dict["center_crop_flag"] = center_crop_flag
@@ -356,7 +357,7 @@ def load_merged_data(
         dataset_name = os.path.basename(dataset_dir)
         dataset_config = DATASET_CONFIGS[dataset_name]
         incomplete_tissue_samples = dataset_config["incomplete_tissue_samples"] if "incomplete_tissue_samples" in dataset_config else []
-        tissue_names = [tissue_name for tissue_name in dataset_file_names if tissue_name.startswith("tissue") and tissue_name not in incomplete_tissue_samples]
+        tissue_names = [tissue_name for tissue_name in dataset_file_names if tissue_name.startswith(("tissue", "phantom")) and tissue_name not in incomplete_tissue_samples]
         
         if dagger_ratio is None:
             # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
@@ -392,7 +393,7 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms,
+                        input_transforms,
                         center_crop_flag)
             )
             
@@ -416,7 +417,7 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms,
+                        input_transforms,
                         center_crop_flag,
                         reduced_base_class_set_flag)
             )
@@ -430,7 +431,7 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms,
+                        input_transforms,
                         center_crop_flag,
                         reduced_base_class_set_flag)
             )
@@ -446,8 +447,8 @@ def load_merged_data(
             val_command_embeddings_dict = val_datasets[-1].command_embeddings_dict
 
             # Check for same commands in train and val datasets
-            train_commands = set(train_command_embeddings_dict.keys())
-            val_commands = set(val_command_embeddings_dict.keys())
+            train_commands = set([command for command, _ in train_command_embeddings_dict.values()])
+            val_commands = set([command for command, _ in val_command_embeddings_dict.values()])
             if train_commands != val_commands:
                 raise ValueError(f"Commands for validation does not match training commands.")
             
@@ -470,7 +471,7 @@ def load_merged_data(
                         prediction_offset,
                         history_step_size,
                         num_episodes,
-                        framewise_transforms,
+                        input_transforms,
                         center_crop_flag,
                         reduced_base_class_set_flag)
             )
@@ -587,8 +588,8 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from instructor.utils import set_seed
 
-    seed = 0
-    set_seed(seed)
+    # seed = 0
+    # set_seed(seed)
 
     # Parameters for the test
     dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting") # "base_chole_clipping_cutting" | "debugging"
@@ -603,18 +604,25 @@ if __name__ == "__main__":
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations
-    framewise_transforms = []
-    framewise_transforms.append(transforms.RandomRotation(15))
-    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    framewise_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    input_transforms = []
     
-    # framewise_transforms.append(v2.RandomPerspective(p=0.5))
-    # framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
-    # framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
-    # framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
-    # framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
-    framewise_transforms = transforms.Compose(framewise_transforms)
+    # Note: Automatic augmentations
+    # input_transforms.append(transforms.RandAugment())
+    # input_transforms.append(transforms.TrivialAugmentWide())
+    input_transforms.append(transforms.AugMix())
+    
+    # Note: Manual augmetnations
+    # input_transforms.append(transforms.RandomRotation(15))
+    # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    # input_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    
+    # input_transforms.append(v2.RandomPerspective(p=0.5))
+    # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    # input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    # input_transforms.append(transforms.RandomGrayscale(p=0.2))
+    input_transforms = transforms.Compose(input_transforms)
 
     # Create a SequenceDataset instance
     dataset = SequenceDataset(
@@ -627,7 +635,7 @@ if __name__ == "__main__":
         prediction_offset,
         history_step_size,
         num_episodes,
-        framewise_transforms,
+        input_transforms,
         center_crop_flag=False,
         reduced_base_class_set_flag=reduced_base_class_set_flag,
     )
