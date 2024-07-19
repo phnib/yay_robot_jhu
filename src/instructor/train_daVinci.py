@@ -117,6 +117,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     if plot_images_flag:
         incorrect_img_cnt = correct_img_cnt = 0
+        rand_batch_idx = np.random.randint(0, len(dataloader))
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             images, command_embedding_gt, command_gt = batch
@@ -155,8 +156,8 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
                 all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
-            for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):    
-                if plot_images_flag:            
+            if plot_images_flag and batch_idx == rand_batch_idx: 
+                for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):            
                     # Save incorrect prediction
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
