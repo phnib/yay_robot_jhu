@@ -1,3 +1,6 @@
 [submodule "src/instructor/submodules/gsvit_submodule/gsvit"]
 	path = src/instructor/submodules/gsvit_submodule/gsvit
 	url = https://github.com/SamuelSchmidgall/GSViT.git
+[submodule "src/instructor/submodules/surgical_vlm/prismatic-vlms"]
+	path = src/instructor/submodules/surgical_vlm/prismatic-vlms
+	url = https://github.com/TRI-ML/prismatic-vlms.git

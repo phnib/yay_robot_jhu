@@ -244,14 +244,17 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.task_config = task_config
         self.action_mode = task_config['action_mode'][0]
         self.norm_scheme = task_config['norm_scheme']
+        self.phantom = task_config['phantom']
         self.is_sim = None
         self.cutting_action_pad_size = task_config['cutting_action_pad_size']
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
         self.command_embeddings_dict = {}
         for tissue_sample_id in tissue_sample_ids:
-            tissue_sample_name = f"phantom_{tissue_sample_id}"
-            # tissue_sample_name = f"tissue_{tissue_sample_id}"
+            if self.phantom:
+                tissue_sample_name = f"phantom_{tissue_sample_id}"
+            else:
+                tissue_sample_name = f"tissue_{tissue_sample_id}"
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = os.listdir(tissue_sample_dir_path)
             # print(phases)
@@ -267,6 +270,8 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                 for demo_sample in demo_samples:
                     if demo_sample == "Corrections":
                         demo_samples.remove(demo_sample)
+                        # demo_samples_path = os.path.join(demo_samples_path, demo_sample)
+                        # demo_samples = os.listdir(demo_samples_path)
                 # if phase_sample.endswith("_recovery"):
                 #     # print(phase_sample)
                 #     phase_sample = phase_sample[:-9]
