@@ -2,12 +2,12 @@ from pathlib import Path
 import json
 
 import cv2
-import pandas as pd
 
-def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset = 5, before_phase_offset = 5, with_label_flag=True, desired_camera_name=None):
+def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset = 5, before_phase_offset = 5,
+                                    with_label_flag=True, desired_camera_names=None, tissue_prefix="tissue"):
     
     # Define the final video path for each run
-    final_video_path = Path(output_path) / f"all_demos_combined_tissue_{tissue_idx}_{timestamp}.avi"
+    final_video_path = Path(output_path) / f"all_demos_combined_{tissue_prefix}_{tissue_idx}_{timestamp}.avi"
     
     # Create the parent directory if it does not exist
     if not final_video_path.parent.exists():
@@ -17,13 +17,14 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
     out = None
 
     # Get the defined tissue folder
-    tissue_folder_path = Path(base_path) / f"tissue_{tissue_idx}"
+    tissue_folder_path = Path(base_path) / f"{tissue_prefix}_{tissue_idx}"
 
     # Get and sort phase folders based on the number before the first "_"
-    phase_folders = sorted(tissue_folder_path.glob('*_*'), key=lambda p: int(p.name.split('_')[0]))
+    phase_folders = [phase_folder for phase_folder in tissue_folder_path.glob('*_*') if phase_folder.name.split('_')[0].isdigit()]
+    phase_folders_sorted = sorted(phase_folders, key=lambda p: int(p.name.split('_')[0]))
 
     # Iterate through each of the sorted phase folders
-    for phase_folder_path in phase_folders:
+    for phase_folder_path in phase_folders_sorted:
         # Get all demo folders for that specific tissue and phase
         date_folders = list(phase_folder_path.glob('*-*'))
         if not date_folders:
@@ -32,13 +33,12 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
 
         date_folder_sorted = sorted(date_folders, key=lambda p: p.name)
         for selected_date_folder_path in date_folder_sorted:
-            # Get number of frames from the kinematics csv file
-            kinematics_csv_path = selected_date_folder_path / 'ee_csv.csv'
-            if not kinematics_csv_path.exists():
-                print(f"No kinematics csv file found for {selected_date_folder_path}")
-                continue # Skip if no kinematics csv file found
-            df = pd.read_csv(kinematics_csv_path)
-            dataset_length = len(df)
+            # Get number of frames from the left image directory
+            left_img_dir_path = selected_date_folder_path / "left_img_dir"
+            if not left_img_dir_path.exists():
+                print(f"No left image directory found for {selected_date_folder_path}")
+                continue
+            dataset_length = len(list(left_img_dir_path.glob("*.jpg")))
             start, end = 0, dataset_length - 1
             
             # Check for "indices_curated.json" file (for more accurate start and end indices)
@@ -64,14 +64,14 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
                 camera_name_suffix_mapping = [('endo_psm2', '_psm2.jpg'), 
                                             ('left_img_dir', '_left.jpg'), 
                                             ('endo_psm1', '_psm1.jpg')]
-                if desired_camera_name:
-                    camera_name_suffix_mapping = [(camera_name, camera_name_suffix) for camera_name, camera_name_suffix in camera_name_suffix_mapping if camera_name == desired_camera_name]
+                if desired_camera_names:
+                    camera_name_suffix_mapping = [(camera_name, camera_name_suffix) for camera_name, camera_name_suffix in camera_name_suffix_mapping if camera_name in desired_camera_names]
                 for sub_folder, suffix in camera_name_suffix_mapping:
                     img_path = selected_date_folder_path / sub_folder / f"frame{str(frame_idx).zfill(6)}{suffix}"
                     if img_path.exists():
                         img = cv2.imread(str(img_path))
                         if img is not None:
-                            if sub_folder == 'left_img_dir' and not desired_camera_name:
+                            if sub_folder == 'left_img_dir' and desired_camera_names != ['left_img_dir']:
                                 height = 480
                                 width = int(img.shape[1] * (height / img.shape[0]))
                                 img = cv2.resize(img, (width, height))
@@ -81,7 +81,6 @@ def create_combined_video_all_demos(base_path, output_path, tissue_idx, timestam
                             raise ValueError(f"Image corrupt for {img_path}")
                     else:
                         print(f"Image not found for {img_path}")
-                        continue
 
                 # Concatenate the images
                 final_image = cv2.hconcat(images)
@@ -107,17 +106,19 @@ if __name__ == "__main__":
     from datetime import datetime
     import os
 
-    tissue_indices = [13] # [1,4,5,6,8,12]
+    tissue_indices = [1] # [1,4,5,6,8,12]
+    tissue_prefix = "tissue" # "tissue" "phantom"
+    dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging" "debugging2"
 
     # Set the base and output path
     chole_scripts_path = Path(__file__).parent
-    base_path =  os.path.join(os.getenv("PATH_TO_DATASET"), "base_chole_clipping_cutting")
+    base_path =  os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     output_path = Path(os.path.join(chole_scripts_path, "AllDemosVideos"))
 
     # Generate the combined video
     before_phase_offset, after_phase_offset = 10, 10
-    with_label_flag=False
-    desired_camera_name = "left_img_dir" # None
+    with_label_flag = True
+    desired_camera_names = None # ["left_img_dir"] # None 
     for tissue_idx in tissue_indices:
-        create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset, before_phase_offset, with_label_flag, desired_camera_name)
+        create_combined_video_all_demos(base_path, output_path, tissue_idx, timestamp, after_phase_offset, before_phase_offset, with_label_flag, desired_camera_names, tissue_prefix)

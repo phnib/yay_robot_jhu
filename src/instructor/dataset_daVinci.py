@@ -283,9 +283,9 @@ class SequenceDataset(torch.utils.data.Dataset):
         # TODO: Check if this applies the same transform for all camera images # Alternative: Apply the same transform for all camera images / framewise (maybe by arg)
         image_sequence = torch.stack(image_sequence, dim=0)#.to(dtype=torch.float32) # Shape: ts, cam, c, h, w
         if self.split_name == "train" and self.input_transforms is not None:
-            image_sequence = image_sequence.view(-1, image_sequence.size(2), image_sequence.size(3), image_sequence.size(4)) # Reshape to (ts*cam, c, h, w) for applying the same transform to all camera images
+            image_sequence = image_sequence.reshape(-1, image_sequence.size(2), image_sequence.size(3), image_sequence.size(4)) # Reshape to (ts*cam, c, h, w) for applying the same transform to all camera images
             image_sequence = self.input_transforms(image_sequence) 
-            image_sequence = image_sequence.view(-1, len(self.camera_names), image_sequence.size(1), image_sequence.size(2), image_sequence.size(3)) # Reshape back to (ts, cam, c, h, w)
+            image_sequence = image_sequence.reshape(-1, len(self.camera_names), image_sequence.size(1), image_sequence.size(2), image_sequence.size(3)) # Reshape back to (ts, cam, c, h, w)
         image_sequence = image_sequence / 255.0 
 
         return image_sequence, command_embedding, command_gt # TODO: add later: , phase_order_idx (if still using the logic approach)

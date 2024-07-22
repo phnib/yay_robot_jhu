@@ -117,7 +117,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     if plot_images_flag:
         incorrect_img_cnt = correct_img_cnt = 0
-        rand_batch_idx = np.random.randint(0, len(dataloader))
+        rand_batch_idx = np.random.randint(0, len(dataloader)) # Batch to evaluate
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             images, command_embedding_gt, command_gt = batch

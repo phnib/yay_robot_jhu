@@ -160,17 +160,7 @@ def load_clip_fe(model_init_weights, device):
         model_weights_path = Path(__file__).resolve().parent / "submodules" / "clip" / "models" / "soft_task.pt"
         model = load("ViT-B/16", device=device)[0]
         sda_clip_state_dict = torch.load(model_weights_path, map_location=device)["model_state_dict"]
-        model.load_state_dict(sda_clip_state_dict)
-        
-        # # Print all the layers with their indices # TODO: Remove me later
-        # for idx, (name, module) in enumerate(model.named_modules()):
-        #     print(f"Index: {idx}, Name: {name}, Module: {module}")
-        
-        # print("--------------------")
-        
-        # for layer_idx, param in enumerate(model.parameters()): # TODO: Remove me later
-        #     print(f"Layer index: {layer_idx}")
-            
+        model.load_state_dict(sda_clip_state_dict)            
         
     # Set the number of features
     num_features = model.visual.output_dim
@@ -198,11 +188,6 @@ def init_feature_extractor_model(fe_model_name, model_init_weights, device, free
         if freeze_fe_until_layer != "all" and (freeze_fe_until_layer == "none" or layer_idx == freeze_fe_until_layer):
             break
         param.requires_grad = False
-        
-    # TODO: Integrate me differently later
-    # Unfreeze the final transformer block (11th) and the final LayerNorm layer
-    for param in fe.visual.transformer.resblocks[11].parameters():
-        param.requires_grad = True
         
     return fe, num_features
 

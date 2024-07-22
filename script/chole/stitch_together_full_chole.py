@@ -2,10 +2,10 @@ import random
 from pathlib import Path
 import json
 
-import cv2
 import pandas as pd
+import cv2
 
-def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, tissue_idx=1, after_phase_offset = 5, before_phase_offset = 5, phase_text_flag = True, also_right_camera_flag=False):
+def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, tissue_idx=1, after_phase_offset = 5, before_phase_offset = 5, phase_text_flag = True, desired_camera_names=None, save_each_n_frame_as_image_wo_text=None):
    
    # Create the parent directory if it does not exist
     if not output_path.exists():
@@ -23,7 +23,8 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
     
     for vid_index in range(num_videos):
         # Define the final video path for each run
-        final_video_path = Path(output_path) / f"randomly_stitched_episode_tissue_{tissue_idx}_{vid_index + 1}.avi"
+        video_name = f"randomly_stitched_episode_tissue_{tissue_idx}_{vid_index + 1}"
+        final_video_path = Path(output_path) / f"{video_name}.avi"
         
         # Create the parent directory if it does not exist
         if not final_video_path.parent.exists():
@@ -35,10 +36,25 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
         # Get the defined tissue folder
         tissue_folder_path = Path(base_path) / f"tissue_{tissue_idx}"
 
+        # Create the full kinematics episode csv file
+        full_kinematics_episode_output_path = Path(output_path) / "full_kinematics_episode.csv"
+        full_kinematics_episode = pd.DataFrame()
+
+        if save_each_n_frame_as_image_wo_text:
+            # Create a directory for the current tissue and video index
+            frames_folder_output_path = Path(output_path) / f"{video_name}_frames"
+            if not frames_folder_output_path.exists():
+                frames_folder_output_path.mkdir(parents=True, exist_ok=True)
+
+            # Create log file to put in current time stamp, psm2 and psm1 jaw information every n frames (to input into VLM)
+            yaw_info_log_file_path = Path(output_path) / "yaw_info_log.txt"
+
+            episode_frame_idx = 0
+
         # Iterate through each of phase folders
         for phase_idx in range(1, num_phases + 1):
             # Get the current phase folder
-            phase_folder_start = f"{phase_idx}_*[^recovery]" # TODO: Filter here out the recovery states (later randomly chooose the recovery phases or the normal one)
+            phase_folder_start = f"{phase_idx}_*[^recovery]" # Exclude recovery phases - for now (as preventing continous stitching)
             try:   
                 phase_folder_path = list(tissue_folder_path.glob(phase_folder_start))[0]
             except IndexError:
@@ -50,15 +66,14 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
                 continue
             selected_date_folder_path = random.choice(date_folders)
             
-            # Get number of frames from the kinematics csv file
-            kinematics_csv_path = selected_date_folder_path / 'ee_csv.csv'
-            if not kinematics_csv_path.exists():
-                print(f"No kinematics csv file found for {selected_date_folder_path}")
-                continue # Skip if no kinematics csv file found
-            df = pd.read_csv(kinematics_csv_path)
-            dataset_length = len(df)
+            # Get number of frames from the left image directory
+            left_img_dir_path = selected_date_folder_path / "left_img_dir"
+            if not left_img_dir_path.exists():
+                print(f"No left image directory found for {selected_date_folder_path}")
+                continue
+            dataset_length = len(list(left_img_dir_path.glob("*.jpg")))
             start, end = 0, dataset_length - 1
-            
+                        
             # Check for "indices_curated.json" file (for more accurate start and end indices)
             indices_curated_file_path = selected_date_folder_path / "indices_curated.json"
             if indices_curated_file_path.exists():
@@ -74,15 +89,24 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
                     if "end" in indices_curated_dict:
                         end = min(indices_curated_dict['end'] + after_phase_offset, end)
             
+            # Get number of frames from the kinematics csv file
+            kinematics_csv_path = selected_date_folder_path / 'ee_csv.csv'
+            if not kinematics_csv_path.exists():
+                print(f"No kinematics csv file found for {selected_date_folder_path}")
+                continue # Skip if no kinematics csv file found
+            demo_kinematics = pd.read_csv(kinematics_csv_path)
+            valid_demo_kinematics = demo_kinematics.iloc[start:end + 1]
+            # Concatenate the kinematics data
+            full_kinematics_episode = pd.concat([full_kinematics_episode, valid_demo_kinematics], ignore_index=True)            
+            
             # Process images for each frame index
             for frame_idx in range(start, end + 1):
                 images = []
                 widths = []
                 # Get image for both wrist cameras and left (and maybe right) image from stereo camera 
-                if not also_right_camera_flag:
-                    subfolder_file_suffix_mapping = [('endo_psm2', '_psm2.jpg'), ('left_img_dir', '_left.jpg'), ('endo_psm1', '_psm1.jpg')]
-                else:
-                    subfolder_file_suffix_mapping = [('endo_psm2', '_psm2.jpg'), ('left_img_dir', '_left.jpg'), ('right_img_dir', '_right.jpg'), ('endo_psm1', '_psm1.jpg')]
+                subfolder_file_suffix_mapping = [('endo_psm2', '_psm2.jpg'), ('left_img_dir', '_left.jpg'), ('right_img_dir', '_right.jpg'), ('endo_psm1', '_psm1.jpg')]
+                if desired_camera_names:
+                    subfolder_file_suffix_mapping = [(camera_name, camera_name_suffix) for camera_name, camera_name_suffix in subfolder_file_suffix_mapping if camera_name in desired_camera_names]
                 for sub_folder, suffix in subfolder_file_suffix_mapping:
                     img_path = selected_date_folder_path / sub_folder / f"frame{str(frame_idx).zfill(6)}{suffix}"
                     if img_path.exists():
@@ -96,10 +120,23 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
                             widths.append(img.shape[1])
                         else:
                             raise ValueError(f"Image corrupt for {img_path}")
+                    else:
+                        raise ValueError(f"Image not found for {img_path}")
 
                 # Concatenate the images
                 final_image = cv2.hconcat(images)
                 
+                if save_each_n_frame_as_image_wo_text and episode_frame_idx % save_each_n_frame_as_image_wo_text == 0:
+                    # Save the image without text
+                    frame_output_path = frames_folder_output_path / f"frame{str(episode_frame_idx).zfill(6)}.jpg"
+                    cv2.imwrite(str(frame_output_path), final_image)
+                    
+                    # Save the jaw information for psm2 and psm1
+                    psm2_yaw = valid_demo_kinematics.iloc[frame_idx]['psm2_jaw']
+                    psm1_yaw = valid_demo_kinematics.iloc[frame_idx]['psm1_jaw']
+                    with open(yaw_info_log_file_path, 'a') as yaw_info_log_file:
+                        yaw_info_log_file.write(f"t={episode_frame_idx}, jaw-psm2: {psm2_yaw}, jaw-psm1: {psm1_yaw}\n")
+
                 if phase_text_flag:
                     # Calculate text position to center over the 'left_img_dir' image
                     text = f"Folder: {phase_folder_path.stem}"
@@ -112,10 +149,16 @@ def create_combined_video(base_path, output_path, num_videos=10, num_phases=17, 
                     out = cv2.VideoWriter(final_video_path, cv2.VideoWriter_fourcc(*'XVID'), 30, (w, h))
                 out.write(final_image)
 
+                episode_frame_idx += 1
+
         # Release the video writer
         if out:
             out.release()
         print(f"Video {vid_index + 1} saved at {final_video_path}")
+        
+        # Save the full kinematics episode to a csv file
+        full_kinematics_episode.to_csv(full_kinematics_episode_output_path, index=False)
+        print(f"Full kinematics episode saved at {full_kinematics_episode_output_path}")
 
 if __name__ == "__main__":
     from pathlib import Path
@@ -128,7 +171,8 @@ if __name__ == "__main__":
     tissue = 12  # tissue_1 has no continuous phases, so we are using >= tissue_4
     before_phase_offset, after_phase_offset = 10, 10
     phase_text_flag = False
-    also_right_camera_flag = False
+    desired_camera_names = ["endo_psm2", "left_img_dir", "endo_psm1"] # ["endo_psm2", "left_img_dir", "endo_psm1"] # ["left_img_dir"] # None ["left_img_dir", "endo_psm1"] ["endo_psm2", "left_img_dir", "endo_psm1"]
+    save_each_n_frame_as_image_wo_text = 30
     
     # Set the base and output path
     chole_scripts_path = Path(__file__).parent
@@ -137,5 +181,5 @@ if __name__ == "__main__":
     output_path = Path(os.path.join(chole_scripts_path, "GeneratedStitchedEpisodes", f"{tissue=}_{timestamp}"))
     
     # Generate the combined video
-    create_combined_video(base_path, output_path, num_videos, num_phases, tissue, after_phase_offset, before_phase_offset, phase_text_flag, also_right_camera_flag)
+    create_combined_video(base_path, output_path, num_videos, num_phases, tissue, after_phase_offset, before_phase_offset, phase_text_flag, desired_camera_names, save_each_n_frame_as_image_wo_text)
 
