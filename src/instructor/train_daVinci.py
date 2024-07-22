@@ -8,6 +8,7 @@ import os
 import argparse
 import threading
 import sys
+import logging
 
 import torch
 import torch.optim as optim
@@ -103,7 +104,8 @@ def evaluate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
-def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir, max_num_images = 10, plot_images_flag=True, log_wandb_flag=True, reduced_base_class_set_flag=False):
+def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir,
+         max_num_images = 10, plot_images_flag=True, log_wandb_flag=True, reduced_base_class_set_flag=False):
 
     model.eval()
 
@@ -192,7 +194,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
         log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("Unmasked", "Masked"), log_wandb_flag, add_info="Masked")
 
     # Compute metrics for unmasked and masked predictions
-    print()
+    logger.info("")
     for name, decoded_texts in zip(["Unmasked", "Masked"], [all_decoded_texts, all_decoded_texts_masked]):
         # Compute the success rate -> accurarcy
         accurarcy_curr_epoch = accuracy_score(all_commands_gt, decoded_texts)
@@ -204,7 +206,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
         if args.log_wandb:
             wandb.log({f"{name} F1 Score": f1_score_curr_epoch})
         
-        print(f"Epoch {current_epoch}: {name} Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name} F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+        logger.info(f"Epoch {current_epoch}: {name} Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name} F1 Score = {f1_score_curr_epoch * 100:.2f}%")
         
         if reduced_base_class_set_flag:
             break # Only compute the metrics for the unmasked predictions when using the reduced base class set
@@ -322,7 +324,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
     all_unique_commands_set = set(candidate_commands)
     all_unique_predicted_commands_set = set(predicted_commands)
     if not all_unique_predicted_commands_set.issubset(all_unique_commands_set):
-        print(f"\nCommands that are not in the candidate commands: {all_unique_predicted_commands_set - all_unique_commands_set}")
+        logger.info(f"\nCommands that are not in the candidate commands: {all_unique_predicted_commands_set - all_unique_commands_set}")
         raise ValueError("All predicted commands should be within the candidate commands")
 
     # Generate a color palette
@@ -476,9 +478,21 @@ if __name__ == "__main__":
     # Set seed
     set_seed(args.seed)
 
+    # Configure local logging (into ckpt folder)
+    if not os.path.exists(args.ckpt_dir):
+        os.makedirs(args.ckpt_dir, exist_ok=True)
+    ckpt_output_log_file_path = os.path.join(args.ckpt_dir, "output.log")
+    logging.basicConfig(level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.FileHandler(ckpt_output_log_file_path),
+                    logging.StreamHandler()
+                ])
+    logger = logging.getLogger(__name__)
+
     # Device setting
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
-    print(f"\nDevice: {device}\n")
+    logger.info(f"\nDevice: {device}\n")
 
     dataset_dirs = []
     num_episodes_list = []
@@ -572,6 +586,12 @@ if __name__ == "__main__":
     # Merge ds_metadata_dict with args (use as wandb config)
     wandb_metadata = ds_metadata_dict.copy()  # Create a copy to avoid modifying the original dict
     wandb_metadata.update(vars(args))
+    
+    # Saving the metadata locally in the ckpt_dir
+    metadata_path = os.path.join(args.ckpt_dir, "metadata.txt")
+    with open(metadata_path, "w") as f:
+        for key, value in wandb_metadata.items():
+            f.write(f"{key}: {value}\n")
 
     # WandB initialization
     if args.log_wandb:
@@ -597,12 +617,11 @@ if __name__ == "__main__":
             os.makedirs(os.path.dirname(wandb_run_id_path), exist_ok=True)
             with open(wandb_run_id_path, "w") as f:
                 f.write(wandb.run.id)
-
-
+        
     # Build the model
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]  
-    print(f"\nLanguage instructions: {candidate_texts}\n")  
+    logger.info(f"\nLanguage instructions: {candidate_texts}\n")  
     model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until)
@@ -623,11 +642,11 @@ if __name__ == "__main__":
         else:
             latest_ckpt, next_idx = latest_checkpoint(args.ckpt_dir)
         if latest_ckpt:
-            print(f"\nLoading checkpoint: {latest_ckpt}")
+            logger.info(f"\nLoading checkpoint: {latest_ckpt}")
             latest_ckpt_dict = torch.load(latest_ckpt, map_location=device).state_dict()
             model.load_state_dict(latest_ckpt_dict)
         else:
-            print("\nNo checkpoint found.")
+            logger.info("\nNo checkpoint found.")
             next_idx = 0
 
     # ---------------------- Training loop ----------------------
@@ -667,6 +686,8 @@ if __name__ == "__main__":
                      log_wandb_flag=args.log_wandb, reduced_base_class_set_flag=args.reduced_base_class_set_flag)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
+        # Log the losses locally
+        logger.info(f"\nEpoch {epoch}: Train Loss = {train_loss:.4f} - Val Loss = {val_loss:.4f}" if args.dagger_ratio is None else f"\nEpoch {epoch}: Train Loss = {train_loss:.4f}")
 
         if args.log_wandb:
             wandb.log({"Epoch Train Loss": train_loss})
@@ -707,7 +728,7 @@ if __name__ == "__main__":
         # Early stopping: Stop training if the validation loss has not improved for specific number of epochs
         if args.early_stopping_interval is not None:
             if epoch - best_val_epoch >= args.early_stopping_interval:
-                print(f"\nEarly stopping at epoch {epoch}")
+                logger.info(f"\nEarly stopping at epoch {epoch}")
                 break
 
     if args.log_wandb:
