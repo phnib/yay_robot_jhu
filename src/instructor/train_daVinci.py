@@ -1,7 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag --class_weights_flag
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag --balanced_class_weights_flag
 """
 
 import os
@@ -41,15 +41,21 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
     model.train()
     total_loss = 0.0
     for batch_idx, batch in enumerate(dataloader):
-        images, _, commands = batch
+        # Get the data from the batch
+        images, _, commands, psm2_psm1_jaw_values, phase_history = batch # If not used then jaw values and phase history is None
         images = images.to(device)
+        if psm2_psm1_jaw_values is not None:
+            psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
+        if phase_history is not None:
+            phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
+            phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
 
+        # Forward pass
         optimizer.zero_grad()
-        logits, temperature, _ = model(images)
+        logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
 
         # Convert ground truth command strings to indices using the pre-computed dictionary
-        commands_idx = [model.command_to_index[cmd] for cmd in commands] 
-        commands_idx = torch.tensor(commands_idx, device=device)
+        commands_idx = torch.tensor([model.command_to_index[cmd] for cmd in commands], device=device)
 
         loss = criterion(logits, commands_idx)
         loss.backward()
@@ -86,14 +92,20 @@ def evaluate(model, dataloader, criterion, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in dataloader: 
-            images, _, commands = batch
+            # Get the data from the batch
+            images, _, commands, psm2_psm1_jaw_values, phase_history = batch # If not used then jaw values and phase history is None
             images = images.to(device)
-
-            logits, temperature, _ = model(images)
+            if psm2_psm1_jaw_values is not None:
+                psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
+            if phase_history is not None:
+                phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
+                phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
+                
+            # Forward pass
+            logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
 
             # Convert ground truth command strings to indices using the pre-computed dictionary
-            commands_idx = [model.command_to_index[cmd] for cmd in commands]
-            commands_idx = torch.tensor(commands_idx, device=device)
+            commands_idx = torch.tensor([model.command_to_index[cmd] for cmd in commands], device=device)
 
             loss = criterion(logits, commands_idx)
             total_loss += loss.item()
@@ -119,18 +131,23 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     if plot_images_flag:
         incorrect_img_cnt = correct_img_cnt = 0
-        rand_batch_idx = np.random.randint(0, len(dataloader)) # Batch to evaluate
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            images, command_embedding_gt, command_gt = batch
+            # Get the data from the batch
+            images, command_embedding_gt, command_gt, psm2_psm1_jaw_values, phase_history = batch
             images = images.to(device)
+            if psm2_psm1_jaw_values is not None:
+                psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
+            if phase_history is not None:
+                phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
+                phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
 
-            logits, temperature, predicted_embedding = model(images)
+            # Forward pass
+            logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
             
-            # TODO: Maybe integrate later again, but would need phase index of the episode
+            # TODO: Remove later (when decided to stick to phase history instead of postprocessing logic)
             if not reduced_base_class_set_flag:
                 # Only consider current (gt) command and next command for the mask
-                # TODO: Add later also the recovery commands (and spatial commands)
                 # Get a list of the current commands
                 current_gt_command_idx = [model.command_to_index[cmd] for cmd in command_gt]
                 # Save here a mask that will only consider the gt command and the next command (later also recovery commands)
@@ -158,7 +175,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
                 all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
-            if plot_images_flag and batch_idx == rand_batch_idx: 
+            if plot_images_flag and (incorrect_img_cnt < max_num_images or correct_img_cnt < max_num_images): 
                 for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):            
                     # Save incorrect prediction
                     if pred != gt and incorrect_img_cnt < max_num_images:
@@ -191,11 +208,11 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_unmasked_{current_epoch}.png")
     log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag, add_info="Unmasked")
     if not reduced_base_class_set_flag:
-        log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("Unmasked", "Masked"), log_wandb_flag, add_info="Masked")
+        log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("unmasked", "masked"), log_wandb_flag, add_info="Masked")
 
     # Compute metrics for unmasked and masked predictions
     logger.info("")
-    for name, decoded_texts in zip(["Unmasked", "Masked"], [all_decoded_texts, all_decoded_texts_masked]):
+    for name, decoded_texts in zip(["", "Masked "], [all_decoded_texts, all_decoded_texts_masked]):
         # Compute the success rate -> accurarcy
         accurarcy_curr_epoch = accuracy_score(all_commands_gt, decoded_texts)
         if args.log_wandb:
@@ -206,7 +223,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
         if args.log_wandb:
             wandb.log({f"{name} F1 Score": f1_score_curr_epoch})
         
-        logger.info(f"Epoch {current_epoch}: {name} Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name} F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+        logger.info(f"Epoch {current_epoch}: {name}Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name}F1 Score = {f1_score_curr_epoch * 100:.2f}%")
         
         if reduced_base_class_set_flag:
             break # Only compute the metrics for the unmasked predictions when using the reduced base class set
@@ -312,9 +329,9 @@ def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, s
     plt.close()
 
 
-# TODO: check if it works corrrectly - close points in high-dimensional space should be close in the 2D space
 def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings, predicted_commands, gt_embeddings, epoch, save_path):
-    
+    # TODO: If later required - fix it 
+
     # Convert lists to numpy arrays
     candidate_embeddings = np.array(candidate_embeddings)
     gt_embeddings = np.array(gt_embeddings)
@@ -349,7 +366,6 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
     # Plot predicted embeddings
     for i, command in enumerate(predicted_commands):
-        # TODO: Show the predicted command via marker filling and the gt command via marker edge
         plt.scatter(predicted_2d[i, 0], predicted_2d[i, 1], color=color_map[command], alpha=0.5)
 
     plt.xlabel("t-SNE Dimension 1")
@@ -369,7 +385,9 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 # -----------------------------
 
-def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until):
+def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, 
+                     center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
+                     phase_history_len, use_transformer_flag):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -389,6 +407,10 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         backbone_model_name=backbone_model_name,
         model_init_weights=model_init_weights,
         freeze_backbone_until=freeze_backbone_until,
+        use_jaw_values_flag=use_jaw_values_flag,
+        use_phase_history_flag=use_phase_history_flag,
+        phase_history_len=phase_history_len,
+        use_image_emb_transformer_flag=use_transformer_flag,
     ).to(device)
     return model
 
@@ -471,7 +493,12 @@ if __name__ == "__main__":
     # endovit - possible weights: endo700k | imagenet
     parser.add_argument('--model_init_weights', action='store', type=str, help='model_init_weights', default="imagenet")
     parser.add_argument('--freeze_backbone_until', action='store', type=str, help='freeze_backbone_until', default="all") 
-    parser.add_argument('--class_weights_flag', action='store_true', help='Use class weights for the loss function')
+    parser.add_argument('--balanced_class_weights_flag', action='store_true', help='Use balanced class weights for the loss function')
+    parser.add_argument('--use_jaw_values_flag', action='store_true', help='Use the jaw values as input to the model')
+    parser.add_argument('--use_phase_history_flag', action='store_true', help='Use the history as input to the model')
+    parser.add_argument('--phase_history_len', action='store', type=int, help='phases_history_len', default=6)
+    parser.add_argument('--use_transformer_flag', action='store_true', help='Use a transformer model instead of a linear layer')
+    # TODO: Decide later here on the augmentation mode used
     
     args = parser.parse_args()
 
@@ -547,6 +574,9 @@ if __name__ == "__main__":
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
+            use_phase_history_flag=args.use_phase_history_flag,
+            phase_history_len=args.phase_history_len,
+            use_jaw_values_flag=args.use_jaw_values_flag,
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -564,6 +594,9 @@ if __name__ == "__main__":
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
+            use_phase_history_flag=args.use_phase_history_flag,
+            phase_history_len=args.phase_history_len,
+            use_jaw_values_flag=args.use_jaw_values_flag
         )
     else:
         test_dataloader, ds_metadata_dict = load_merged_data(
@@ -581,6 +614,9 @@ if __name__ == "__main__":
             dagger_ratio=args.dagger_ratio,
             center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
+            use_phase_history_flag=args.use_phase_history_flag,
+            phase_history_len=args.phase_history_len,
+            use_jaw_values_flag=args.use_jaw_values_flag
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -624,9 +660,11 @@ if __name__ == "__main__":
     logger.info(f"\nLanguage instructions: {candidate_texts}\n")  
     model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
-                             args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until)
+                             args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until,
+                             args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
+                             args.use_transformer_flag)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    if args.class_weights_flag and not args.test_only_flag:
+    if args.balanced_class_weights_flag and not args.test_only_flag:
         criterion = torch.nn.CrossEntropyLoss(weight=ds_metadata_dict["class_weights"].to(device)) # weight the loss based on the number of phases per language instruction
     else:
         criterion = torch.nn.CrossEntropyLoss()

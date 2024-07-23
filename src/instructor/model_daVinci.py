@@ -15,7 +15,6 @@ else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from instructor.backbone_models_daVinci import extract_features, init_feature_extractor_model, preprocess_inputs, init_processor
 
-# TODO: Add here the selection of the backend model
 class Instructor(nn.Module):
     def __init__(
         self,
@@ -25,54 +24,100 @@ class Instructor(nn.Module):
         prediction_offset,
         camera_names,
         center_crop_flag,
-        output_size=768, # DestillBert embedding space size
-        hidden_size=512, # For the MLP
+        output_dim=768, # DestillBert embedding space size
+        hidden_dim=256, # For the MLP
         num_heads=8, # For the Transformer
         num_layers=6, # For the Transformer
         candidate_embeddings=None,
         candidate_texts=None,
         command_to_index=None,
-        num_cameras=4,
         one_hot_flag=False,
         backbone_model_name="clip",
         model_init_weights=None,
-        freeze_backbone_until="all"
+        freeze_backbone_until="all",
+        use_jaw_values_flag=False,
+        jaw_values_output_dim=256,
+        use_phase_history_flag=False,
+        phase_history_len=6,
+        phase_emb_dim=4,
+        history_output_dim=256,
+        use_image_emb_transformer_flag=False,
     ):
         super().__init__()
-        self.one_hot_flag = one_hot_flag
 
         # Load pretrained backbone model
         self.backbone_model, self.backbone_output_dim = init_feature_extractor_model(backbone_model_name, model_init_weights, device, freeze_backbone_until)
         self.processor = init_processor(backbone_model_name, model_init_weights)
         
-        # Transformer for processing sequences of image embeddings
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=self.backbone_output_dim,
-                nhead=num_heads,
-                dim_feedforward=hidden_size,
-                batch_first=True
-            ),
-            num_layers=num_layers,
-        )
+        num_cameras = len(camera_names)
+        if use_image_emb_transformer_flag:
+            # Transformer for processing sequences of image embeddings
+            self.transformer = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=self.backbone_output_dim,
+                    nhead=num_heads,
+                    dim_feedforward=hidden_dim,
+                    batch_first=True
+                ),
+                num_layers=num_layers,
+            )
+            
+            # Positional Encoding
+            self.positional_encoding = self.create_sinusoidal_embeddings(
+                self.backbone_output_dim, (history_len + 1) * num_cameras
+            )
+            image_output_dim = self.backbone_output_dim
+        else:
+            image_output_dim = self.backbone_output_dim * num_cameras * (history_len + 1) # As image features are concatenated then
+    
+        if use_jaw_values_flag:
+            # MLP for processing jaw values
+            num_jaw_values = 2 * (history_len + 1) # 2 values per timestep
+            self.jaw_values_mlp = nn.Linear(num_jaw_values, jaw_values_output_dim)
+            image_jaw_mlp_input_dim = image_output_dim + jaw_values_output_dim
+            self.image_jaw_mlp = nn.Sequential(
+                nn.Linear(image_jaw_mlp_input_dim, hidden_dim),
+                nn.ReLU()
+            )
+            
+        if use_phase_history_flag:
+            # Embedding for phase history
+            self.phase_embedding = nn.Embedding(len(candidate_texts)+1, phase_emb_dim)
+            history_mlp_input_dim = phase_emb_dim * phase_history_len
+            self.history_mlp = nn.Sequential(
+                nn.Linear(history_mlp_input_dim, history_output_dim),
+                nn.ReLU()
+            )
+            
+            # Add mapping from commands to indices (with padding)
+            self.history_phase_to_index = command_to_index
+            self.history_phase_to_index = {k: v + 1 for k, v in self.history_phase_to_index.items()}
+            self.history_phase_to_index["padding"] = 0            
+
+        # MLP for processing the final output
+        if use_jaw_values_flag and use_phase_history_flag:
+            mlp_input_dim = hidden_dim + history_output_dim
+        elif use_jaw_values_flag:
+            mlp_input_dim = hidden_dim
+        elif use_phase_history_flag:
+            mlp_input_dim = image_output_dim + history_output_dim
+        else:
+            mlp_input_dim = image_output_dim
 
         if one_hot_flag:
-            output_size = len(candidate_texts)
+            output_dim = len(candidate_texts)
 
         self.mlp = nn.Sequential(
-            nn.Linear(self.backbone_output_dim, hidden_size),
+            nn.Linear(mlp_input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
+            nn.Linear(hidden_dim, output_dim),
         )
 
         # Learnable temperature
         self.temperature = nn.Parameter(torch.ones(1))
 
-        # Positional Encoding
-        self.positional_encoding = self.create_sinusoidal_embeddings(
-            self.backbone_output_dim, (history_len + 1) * num_cameras
-        )
-
+        # Store the rest of the parameters (for logging)
+        self.one_hot_flag = one_hot_flag
         self.history_len = history_len
         self.history_step_size = history_step_size
         self.prediction_offset = prediction_offset
@@ -85,12 +130,29 @@ class Instructor(nn.Module):
         self.model_init_weights = model_init_weights
         self.freeze_backbone_until = freeze_backbone_until
         self.device = device
+        self.use_jaw_values_flag = use_jaw_values_flag
+        self.use_phase_history_flag = use_phase_history_flag
+        self.use_image_emb_transformer_flag = use_image_emb_transformer_flag
+        if use_jaw_values_flag:
+            self.jaw_values_output_dim = jaw_values_output_dim
+        if use_phase_history_flag:
+            self.phase_emb_dim = phase_emb_dim
+            self.history_output_dim = history_output_dim
+            self.phase_history_len = phase_history_len
+        self.output_dim = output_dim
+        self.hidden_dim = hidden_dim
+        if use_image_emb_transformer_flag:
+            self.num_heads = num_heads
+            self.num_layers = num_layers
 
         total, trainable = count_parameters(self)
         print(f"Total parameters: {total / 1e6:.2f}M")
         print(f"Trainable parameters: {trainable / 1e6:.2f}M")
 
-    def forward(self, images):
+    def forward(self, images, psm2_psm1_jaw_values=None, phase_history=None):
+        
+        assert len(phase_history[0]) == self.phase_history_len, f"Phase history should have length {self.phase_history_len}"
+        
         # Given images of shape (b, t, k, c, h, w)
         batch_size, timesteps, num_cameras, c, h, w = images.shape
 
@@ -117,18 +179,41 @@ class Instructor(nn.Module):
             batch_size, timesteps * num_cameras, -1
         ).to(torch.float32)
 
-        # Add positional encoding
-        image_features_reshaped += self.positional_encoding[
-            : timesteps * num_cameras, :
-        ].to(image_features_reshaped.device)
+        # Use the transformer to process the image features or concatenate them
+        if self.use_image_emb_transformer_flag:
+            # Add positional encoding
+            image_features_reshaped += self.positional_encoding[
+                : timesteps * num_cameras, :
+            ].to(image_features_reshaped.device)
 
-        # Pass the concatenated features through the Transformer
-        transformer_out = self.transformer(
-            image_features_reshaped.transpose(0, 1)
-        ).transpose(0, 1)
+            # Pass the concatenated features through the Transformer
+            transformer_out = self.transformer(
+                image_features_reshaped.transpose(0, 1)
+            ).transpose(0, 1)
 
-        # Extract the final output of the Transformer for each sequence in the batch
-        final_output = transformer_out[:, -1, :]
+            # Extract the final output of the Transformer for each sequence in the batch
+            final_image_output = transformer_out[:, -1, :]
+        else:
+            # Concatenate the image features
+            final_image_output = image_features_reshaped.reshape(batch_size, -1)
+
+        # Process the jaw values (if available)
+        if self.use_jaw_values_flag:
+            psm2_psm1_jaw_values_flattened = psm2_psm1_jaw_values.reshape(batch_size, -1) # Flatten the jaw values: (batch_size, timesteps, 2) -> (batch_size, timesteps*2)
+            psm2_psm1_jaw_values_features = self.jaw_values_mlp(psm2_psm1_jaw_values_flattened)
+            psm2_psm1_jaw_values_image_features = torch.cat((final_image_output, psm2_psm1_jaw_values_features), dim=1)
+            final_output = self.image_jaw_mlp(psm2_psm1_jaw_values_image_features)          
+        else:
+            final_output = final_image_output
+
+        # Process the phase history (if available)
+        if self.use_phase_history_flag:
+            phase_history_embeddings = self.phase_embedding(phase_history)
+            phase_history_embeddings_reshaped = phase_history_embeddings.reshape(batch_size, -1)
+            phase_history_output = self.history_mlp(phase_history_embeddings_reshaped)
+            
+            # Concatenate the final output with the phase history output
+            final_output = torch.cat((final_output, phase_history_output), dim=1)
 
         if self.one_hot_flag:
             # Directly predict the logits for each command
@@ -260,22 +345,32 @@ if __name__ == "__main__":
     prediction_offset = 0 # Get command for the current timestep
     history_step_size = 30
     num_episodes = 200 # Number of randlomy generated stitched episodes
+    use_phase_history_flag = True
+    phase_history_len = 6
+    use_jaw_values_flag = True
+    use_transformer_flag = False # TODO: Tryout both
+    center_crop_flag = True
+    reduced_base_class_set_flag = False
+    one_hot_flag = True
+    backbone_model_name = "clip"
+    model_init_weights = "sda"
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
-    framewise_transforms = []
-    framewise_transforms.append(transforms.RandomRotation(30))
-    framewise_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    framewise_transforms.append(v2.RandomPerspective(p=0.5))
-    framewise_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
-    framewise_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
-    framewise_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    framewise_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
-    framewise_transforms.append(v2.RandomPhotometricDistort(p=0.8))
-    framewise_transforms.append(transforms.RandomGrayscale(p=0.2))
-    framewise_transforms = transforms.Compose(framewise_transforms)
+    input_transforms = []
+    input_transforms.append(transforms.RandomRotation(30))
+    input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    input_transforms.append(v2.RandomPerspective(p=0.5))
+    input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    input_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    input_transforms.append(transforms.RandomGrayscale(p=0.2))
+    input_transforms = transforms.Compose(input_transforms)
 
     # Dataset and Dataloader parameters
-    datasets_dir = [os.path.join(os.getenv("PATH_TO_DATASET"), "debugging")]
+    dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging"
+    datasets_dir = [os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name)]
     num_episodes_list = [200]*len(datasets_dir)
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
@@ -293,28 +388,50 @@ if __name__ == "__main__":
         history_step_size=history_step_size,
         batch_size_train=batch_size_train,
         batch_size_val=batch_size_val,
-        framewise_transforms=framewise_transforms,
+        input_transforms=input_transforms,
+        use_phase_history_flag=use_phase_history_flag,
+        use_jaw_values_flag=use_jaw_values_flag,
+        reduced_base_class_set_flag=reduced_base_class_set_flag,
+        phase_history_len=phase_history_len,
+        center_crop_flag=center_crop_flag,
     )    
-    candidate_embeddings = ds_metadata_dict["command_embeddings"]
-    candidate_texts = ds_metadata_dict["command_texts"]
+    candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
+    candidate_texts = ds_metadata_dict["candidate_texts"]
     
     # Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     candidate_embeddings = candidate_embeddings.to(device)
+    command_to_index = {command: i for i, command in enumerate(candidate_texts)}
     model = Instructor(
         device=device,
         history_len=history_len,
+        history_step_size=history_step_size,
+        prediction_offset=prediction_offset,
         candidate_embeddings=candidate_embeddings,
         candidate_texts=candidate_texts,
+        command_to_index=command_to_index,
+        camera_names=camera_names,
+        center_crop_flag=center_crop_flag,
+        use_jaw_values_flag=use_jaw_values_flag,
+        use_phase_history_flag=use_phase_history_flag,
+        use_image_emb_transformer_flag=use_transformer_flag,
+        one_hot_flag=one_hot_flag,
+        backbone_model_name=backbone_model_name,
+        model_init_weights=model_init_weights,        
     )
     model.to(device)
 
     for split_name, dataloader in [("train", train_dataloader), ("val", val_dataloader)]:
         # Fetch a batch of data and pass it through the model
         idx_in_batch = 0
-        for image_sequence, command_embedding, gt_command in dataloader:
+        for image_sequence, command_embedding, gt_command, jaw_values, phase_history in dataloader:
             image_sequence = image_sequence.to(device)
-            predictions_logits, temperature, _ = model(image_sequence)
+            if use_jaw_values_flag:
+                jaw_values = jaw_values.to(device)
+            if use_phase_history_flag:
+                phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
+                phase_history_indexed = torch.tensor(phase_history_indexed).transpose(0, 1).to(device)
+            predictions_logits, temperature, _ = model(image_sequence, jaw_values, phase_history_indexed)
             pred_command = model.decode_logits(predictions_logits, temperature)
             
             print(f"\nSplit: {split_name}")
@@ -323,6 +440,8 @@ if __name__ == "__main__":
             print(f"Predictions shape: {predictions_logits.shape}")
             print(f"Ground truth command ({prediction_offset=}): {gt_command[idx_in_batch]}")
             print(f"Predicted command [untrained] ({prediction_offset=}): {pred_command[idx_in_batch]}\n")
+            print(f"Phase history: {phase_history}")
+            print(f"Jaw values: {jaw_values}")
             
             break
 

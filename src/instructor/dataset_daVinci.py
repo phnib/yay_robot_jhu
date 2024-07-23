@@ -2,11 +2,12 @@ import os
 # import h5py
 import json
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 import math
 
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 from torchvision import transforms
 from torchvision.transforms import v2
@@ -26,15 +27,14 @@ from instructor.utils import DAggerSampler
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model, reduced_base_class_set_flag):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
     phase_command_embeddings_dict = {}
-    # TODO: Add the spatial/finetuning commands later also with idx in folder name?!
     try: 
         unique_phase_folder_names_sorted = sorted(unique_phase_folder_names, key=lambda x: int(x.split('_')[0]))
     except:
         unique_phase_folder_names_sorted = unique_phase_folder_names
     
     if reduced_base_class_set_flag:
-        # TODO: Maybe advance later again (with left, right tube) - or select it via specific subset option
-        instruction_to_phase_idx_mapping = {"clipping tube": [1,2,4,6,10,12,14], "cutting tube": [8,16], "going back to home position": [3,5,7,9,11,13,15,17]} # TODO: Maybe add later again: "grabbing gallbladder": [1], 
+        # TODO: Adjust the instructions later as needed (e.g., clip 1 (left), .. cut (left), ..) - maybe read it out later via a config file?
+        instruction_to_phase_idx_mapping = {"grabbing gallbladder": [1], "clipping tube": [1,2,4,6,10,12,14], "cutting tube": [8,16], "going back to home position": [3,5,7,9,11,13,15,17]}
         phase_idx_to_instruction_mapping = {str(phase_idx): instruction for instruction, phase_idx_list in instruction_to_phase_idx_mapping.items() for phase_idx in phase_idx_list}
     for phase_folder_name in unique_phase_folder_names_sorted:
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
@@ -82,8 +82,7 @@ def extract_candidate_embeddings_and_commands(command_embeddings_dict):
             candidate_texts.append(phase_command)
             candidate_embeddings.append(torch.tensor(phase_embedding).squeeze())
         
-    
-    return torch.stack(candidate_embeddings), candidate_texts #, phase_execution_order # TODO: required for eval of further logic (if still using that approach)
+    return torch.stack(candidate_embeddings), candidate_texts
 
 def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phase_offset, after_phase_offset):
     # Load the start and end indices for the current demo as the valid range of the demo
@@ -117,6 +116,9 @@ class SequenceDataset(torch.utils.data.Dataset):
         input_transforms=None,
         center_crop_flag=False,
         reduced_base_class_set_flag=False,
+        use_phase_history_flag=False,
+        use_jaw_values_flag=False,
+        phase_history_len=6,
     ):
         super().__init__()
         
@@ -134,6 +136,9 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.input_transforms = input_transforms
         self.center_crop_flag = center_crop_flag
         self.reduced_base_class_set_flag = reduced_base_class_set_flag
+        self.use_history_flag = use_phase_history_flag
+        self.use_jaw_values_flag = use_jaw_values_flag
+        self.phase_history_len = phase_history_len
         
         # Set the before_phase_offset and after_phase_offset
         dataset_name = os.path.basename(dataset_dir)
@@ -194,7 +199,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         # Returns the command embedding and the command for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
             if phase_segment["full_episode_demo_start_idx"] <= target_ts <= phase_segment["full_episode_demo_end_idx"]:
-                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"], # TODO: return here the phase order idx (if still using the logic approach)
+                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"]
         else:
             raise ValueError(f"Could not find command for target_ts {target_ts}.")
 
@@ -206,6 +211,51 @@ class SequenceDataset(torch.utils.data.Dataset):
                 return phase_segment["phase_folder_name"], phase_segment["demo_folder_name"], demo_frame_idx
         else:
             raise ValueError(f"Could not find phase and demo frame index for target_ts {target_ts}.")
+
+    def get_jaw_psm2_psm1_data_sequence(self, selected_tissue_sample, selected_phase_demo_dict, start_ts, curr_ts):
+        # Returns the jaw data sequence for psm2 and psm1 for time steps from start_ts to curr_ts
+        
+        # Get a mapping which value needs to be loaded from which csv file
+        ts_kinematics_file_dame_frame_idx_dict = defaultdict(list)
+        for ts in range(start_ts, curr_ts + 1, self.history_step_size):
+            ts_phase_folder, ts_demo_folder, ts_demo_frame_idx = self.get_current_phase_demo_folder_and_demo_frame_idx(selected_phase_demo_dict, ts)
+            kinematics_file_path = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, "ee_csv.csv")
+            ts_kinematics_file_dame_frame_idx_dict[kinematics_file_path].append(ts_demo_frame_idx)
+        
+        # Load the jaw data for the desired timesteps (from the corresponding csv files)
+        jaw_psm2_data_sequence_list, jaw_psm1_data_sequence_list = [], []
+        for kinematics_file_path, frame_indices in ts_kinematics_file_dame_frame_idx_dict.items():
+            kinematics_data = pd.read_csv(kinematics_file_path)
+            jaw_psm2_data_sequence_list.append(torch.tensor(kinematics_data.loc[frame_indices, "psm2_jaw"].values))
+            jaw_psm1_data_sequence_list.append(torch.tensor(kinematics_data.loc[frame_indices, "psm1_jaw"].values))
+        
+        jaw_psm2_data_sequence = torch.concatenate(jaw_psm2_data_sequence_list)
+        jaw_psm1_data_sequence = torch.concatenate(jaw_psm1_data_sequence_list)
+        jaw_psm2_psm1_data_sequence = torch.stack((jaw_psm2_data_sequence, jaw_psm1_data_sequence), dim=1).to(dtype=torch.float32)
+        
+        return jaw_psm2_psm1_data_sequence 
+            
+
+    def get_phase_history(self, selected_phase_demo_dict, curr_ts):
+        # Returns the phase history for the last six phases based on the last performed phases (with padding if needed)
+        
+        # TODO: Define the last ts more accurately (via args=!)
+        pred_frequency = 1 
+        last_pred_ts = curr_ts - 30 * pred_frequency
+        
+        # Get the last 6 performed phases from the current phase on
+        phase_history = deque(maxlen=self.phase_history_len)
+        for phase_segment in selected_phase_demo_dict.values():
+            if phase_segment["full_episode_demo_start_idx"] <= last_pred_ts:
+                phase_history.append(phase_segment["command"])
+                
+        # Transform into a list and use padding otherwise
+        phase_history = list(phase_history)
+        if len(phase_history) < self.phase_history_len:
+            phase_history = ["padding"] * (self.phase_history_len - len(phase_history)) + phase_history
+            
+        return phase_history
+
 
     def __getitem__(self, index):
         # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
@@ -257,6 +307,18 @@ class SequenceDataset(torch.utils.data.Dataset):
         if command_embedding is None:
             raise ValueError(f"Could not find embedding for target_ts {target_ts}.")
         
+        if self.use_jaw_values_flag:
+            # Read out the jaw values from start to end (when a certain flag is set)
+            jaw_psm2_psm1_data_sequence = self.get_jaw_psm2_psm1_data_sequence(selected_tissue_sample, selected_phase_demo_dict, start_ts, curr_ts)
+        else:
+            jaw_psm2_psm1_data_sequence = None
+        
+        # History information of the last six phases (with padding if needed)
+        if self.use_history_flag:
+            phase_history = self.get_phase_history(selected_phase_demo_dict, curr_ts)
+        else:
+            phase_history = None
+        
         # Construct the image sequences for the desired timesteps
         image_sequence = []
         for ts in range(start_ts, curr_ts + 1, self.history_step_size):
@@ -280,15 +342,16 @@ class SequenceDataset(torch.utils.data.Dataset):
             all_cam_images = torch.stack(all_cam_images, dim=0)
             image_sequence.append(all_cam_images)
 
-        # TODO: Check if this applies the same transform for all camera images # Alternative: Apply the same transform for all camera images / framewise (maybe by arg)
-        image_sequence = torch.stack(image_sequence, dim=0)#.to(dtype=torch.float32) # Shape: ts, cam, c, h, w
+        # TODO: Alternative: Apply the same transform for all camera images / framewise (maybe by arg)
+        # Apply the same transform for all camera images 
+        image_sequence = torch.stack(image_sequence, dim=0) # Shape: ts, cam, c, h, w
         if self.split_name == "train" and self.input_transforms is not None:
             image_sequence = image_sequence.reshape(-1, image_sequence.size(2), image_sequence.size(3), image_sequence.size(4)) # Reshape to (ts*cam, c, h, w) for applying the same transform to all camera images
             image_sequence = self.input_transforms(image_sequence) 
             image_sequence = image_sequence.reshape(-1, len(self.camera_names), image_sequence.size(1), image_sequence.size(2), image_sequence.size(3)) # Reshape back to (ts, cam, c, h, w)
         image_sequence = image_sequence / 255.0 
 
-        return image_sequence, command_embedding, command_gt # TODO: add later: , phase_order_idx (if still using the logic approach)
+        return image_sequence, command_embedding, command_gt, jaw_psm2_psm1_data_sequence, phase_history 
 
 
 def load_merged_data(
@@ -306,8 +369,10 @@ def load_merged_data(
     dagger_ratio=None,
     center_crop_flag=False,
     reduced_base_class_set_flag=False,
+    use_phase_history_flag=False,
+    use_jaw_values_flag=False,
+    phase_history_len=6,
 ):
-    # TODO: Add later distributed sampler for multi GPU training
     
     print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
 
@@ -346,6 +411,9 @@ def load_merged_data(
     ds_metadata_dict["num_episodes_list"] = num_episodes_list    
     ds_metadata_dict["center_crop_flag"] = center_crop_flag
     ds_metadata_dict["reduced_base_class_set_flag"] = reduced_base_class_set_flag
+    ds_metadata_dict["use_history_flag"] = use_phase_history_flag
+    ds_metadata_dict["use_jaw_values_flag"] = use_jaw_values_flag
+    ds_metadata_dict["phase_history_len"] = phase_history_len
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
@@ -382,7 +450,6 @@ def load_merged_data(
         
         if dagger_ratio is not None and not test_only:
             raise NotImplementedError("DAgger not yet implemented.")
-            
             train_datasets.append(SequenceDataset(
                         "train",
                         tissue_names,
@@ -394,7 +461,11 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag)
+                        center_crop_flag,
+                        reduced_base_class_set_flag,
+                        use_phase_history_flag,
+                        use_jaw_values_flag,
+                        phase_history_len)
             )
             
             # Get dataset statistics
@@ -419,7 +490,10 @@ def load_merged_data(
                         num_episodes,
                         input_transforms,
                         center_crop_flag,
-                        reduced_base_class_set_flag)
+                        reduced_base_class_set_flag,
+                        use_phase_history_flag,
+                        use_jaw_values_flag,
+                        phase_history_len)
             )
             val_datasets.append(SequenceDataset(
                         "val",
@@ -433,7 +507,10 @@ def load_merged_data(
                         num_episodes,
                         input_transforms,
                         center_crop_flag,
-                        reduced_base_class_set_flag)
+                        reduced_base_class_set_flag,
+                        use_phase_history_flag,
+                        use_jaw_values_flag,
+                        phase_history_len)
             )
             
             # Get dataset statistics
@@ -473,7 +550,10 @@ def load_merged_data(
                         num_episodes,
                         input_transforms,
                         center_crop_flag,
-                        reduced_base_class_set_flag)
+                        reduced_base_class_set_flag,
+                        use_phase_history_flag,
+                        use_jaw_values_flag,
+                        phase_history_len)
             )
             
             # Get dataset statistics
@@ -588,28 +668,27 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from instructor.utils import set_seed
 
-    # seed = 0
-    # set_seed(seed)
-
     # Parameters for the test
-    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), "phantom_chole") # "base_chole_clipping_cutting" "phantom_chole" "debugging"
-    tissue_samples_ids = ["phantom_3"] # "phantom_1" "tissue_12"
+    dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging"
+    dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) 
+    tissue_samples_ids = ["tissue_8"] # "phantom_1" "tissue_12"
     camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
     prediction_offset = 0 # Get command for the current timestep
-    history_step_size = 1
+    history_step_size = 10
     num_episodes = 200 # Number of randlomy generated stitched episodes
     reduced_base_class_set_flag = True
+    phase_history_len = 6
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations
     input_transforms = []
     
     # Note: Automatic augmentations
-    # input_transforms.append(transforms.RandAugment())
+    input_transforms.append(transforms.RandAugment())
     # input_transforms.append(transforms.TrivialAugmentWide())
-    input_transforms.append(transforms.AugMix())
+    # input_transforms.append(transforms.AugMix())
     
     # Note: Manual augmetnations
     # input_transforms.append(transforms.RandomRotation(15))
@@ -638,15 +717,20 @@ if __name__ == "__main__":
         input_transforms,
         center_crop_flag=False,
         reduced_base_class_set_flag=reduced_base_class_set_flag,
+        use_phase_history_flag=True,
+        use_jaw_values_flag=True,
+        phase_history_len=phase_history_len,
     )
 
     # Sample a random item from the dataset
     rdm_idx = np.random.randint(0, len(dataset))
-    image_sequence, command_embedding, command = dataset[rdm_idx]
+    image_sequence, command_embedding, command, jaw_values, phase_history = dataset[rdm_idx]
 
     print(f"Image sequence shape: {image_sequence.shape}")
     print(f"Language embedding shape: {command_embedding.shape}")
     print(f"Command: {command}")
+    print(f"Phase history ({phase_history_len=}): {phase_history}")
+    print(f"Jaw values ({history_len=}):\n{jaw_values}")
 
     # Create a figure with subplots: one row per timestamp, one column per camera
     fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
@@ -663,7 +747,7 @@ if __name__ == "__main__":
             ax.axis('off')  # Optionally turn off the axis
 
     # Set title to command
-    fig.suptitle(f"Command: {command}")
+    fig.suptitle(f"Command: {command} - Jaw values: {jaw_values}", fontsize=16)
     plt.tight_layout()
     example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset")
     if not os.path.exists(example_dataset_plots_folder_path):
