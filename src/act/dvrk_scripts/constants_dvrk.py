@@ -20,6 +20,7 @@ TASK_CONFIGS = {
         'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'cutting_action_pad_size': 10,
+        "recovery_ratio": 0.1,
         'action_mode': ['hybrid', 
                         {'max_': np.array([4.23075504e-04, 9.21509775e-04, 6.13676510e-04, 1.00000000e+00,
                                             4.95288465e-03, 2.07531063e-03, 3.96580366e-03, 1.00000000e+00,
@@ -56,6 +57,7 @@ TASK_CONFIGS = {
         'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'cutting_action_pad_size': 10,
+        "recovery_ratio": 0.1,
         'action_mode': ['hybrid', 
                         {'max_': np.array([4.23075504e-04, 9.21509775e-04, 6.13676510e-04, 1.00000000e+00,
                                             4.95288465e-03, 2.07531063e-03, 3.96580366e-03, 1.00000000e+00,

@@ -13,9 +13,13 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from pytransform3d import rotations, batch_rotations, transformations, trajectories
 from torchvision import transforms, utils
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
 import seaborn as sns
 from tqdm import tqdm
 import json
+
 # path_to_yay_robot = "/home/jchen396/scr4_akriege1/chole/yay_robot_jhu"
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 
@@ -186,6 +190,16 @@ class DataAug(object):
                                             self.random_rot])
         self.color_jitter = transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08)
 
+        ## albumentations (pixel dropout, blur, brightness, contrast, gaussian blur)
+        self.albumentations_transforms = A.Compose([
+            A.CoarseDropout(max_holes=8, max_height=img_hw[0] // 8, max_width=img_hw[1] // 8, min_holes=1, min_height=img_hw[0] // 32, min_width=img_hw[1] // 32, fill_value=0, p=0.5),
+            A.OneOf([
+                A.Blur(blur_limit=3, p=0.5),
+                A.RandomBrightnessContrast(p=0.5),
+                A.GaussianBlur(blur_limit=(3, 7), p=0.5),
+            ], p=1.0),
+            ToTensorV2()
+        ])
 
     def __call__(self, sample):
 
@@ -200,6 +214,11 @@ class DataAug(object):
         img_r_tf = self.color_jitter(img_r_tf)
         img_lw = self.color_jitter(img_lw)
         img_rw = self.color_jitter(img_rw)
+
+        img_l_tf = self.albumentations_transforms(image=np.array(img_l_tf))['image']
+        img_r_tf = self.albumentations_transforms(image=np.array(img_r_tf))['image']
+        img_lw = self.albumentations_transforms(image=np.array(img_lw))['image']
+        img_rw = self.albumentations_transforms(image=np.array(img_rw))['image']
 
         return {'img_l': img_l_tf,
                 'img_r': img_r_tf,
@@ -245,11 +264,13 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.action_mode = task_config['action_mode'][0]
         self.norm_scheme = task_config['norm_scheme']
         self.phantom = task_config['phantom']
+        self.recovery_ratio = task_config['recovery_ratio']
         self.is_sim = None
         self.cutting_action_pad_size = task_config['cutting_action_pad_size']
+        self.img_height, self.img_width = [480, 640]
+
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
-        self.command_embeddings_dict = {}
         for tissue_sample_id in tissue_sample_ids:
             if self.phantom:
                 tissue_sample_name = f"phantom_{tissue_sample_id}"
@@ -257,9 +278,8 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                 tissue_sample_name = f"tissue_{tissue_sample_id}"
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = os.listdir(tissue_sample_dir_path)
-            # print(phases)
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
-            # print(tissue_sample_name,":\n")
+
             for phase_sample in phases:
                 demo_samples_path = os.path.join(tissue_sample_dir_path, phase_sample)
 
@@ -267,24 +287,30 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                     continue  # Skip if the tissue sample path is not a directory
 
                 demo_samples = os.listdir(demo_samples_path)
+
+                ## remove corrections folder
                 for demo_sample in demo_samples:
                     if demo_sample == "Corrections":
                         demo_samples.remove(demo_sample)
-                        # demo_samples_path = os.path.join(demo_samples_path, demo_sample)
-                        # demo_samples = os.listdir(demo_samples_path)
-                # if phase_sample.endswith("_recovery"):
-                #     # print(phase_sample)
-                #     phase_sample = phase_sample[:-9]
 
-                # else:
-                    # tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
+                ## initialize the dictionary for the tissue sample
                 if tissue_sample_name not in self.tissue_phase_demo_dict:
                     self.tissue_phase_demo_dict[tissue_sample_name] = {}
+
+                ## adjust the number of demos for the recovery phase
+                if phase_sample.endswith("_recovery"):
+                    num_of_perfect_demos = len(os.listdir(os.path.join(tissue_sample_dir_path, phase_sample[:-9])))
+                    num_of_recovery_demos = int(num_of_perfect_demos * self.recovery_ratio)
+                    print(f"Recovery phase: {phase_sample}, num of perfect demos: {num_of_perfect_demos}, num of recovery demos: {num_of_recovery_demos}")
+                    demo_samples = demo_samples[:num_of_recovery_demos]
+
                 # Add or update the demo samples in the dictionary
                 self.tissue_phase_demo_dict[tissue_sample_name].setdefault(phase_sample, []).extend(demo_samples)
 
             ## create language embeddings
             if self.use_language:
+                self.command_embeddings_dict = {}
+
                 self.language_encoder = language_encoder
                 tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
                 unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
@@ -311,11 +337,10 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         print("total count:", total_count)
 
         self.all_samples = [(tissue_sample, phase, sample) 
-                    for tissue_sample in self.tissue_phase_demo_dict
-                    for phase in self.tissue_phase_demo_dict[tissue_sample]
-                    for sample in self.tissue_phase_demo_dict[tissue_sample][phase]]
+                            for tissue_sample in self.tissue_phase_demo_dict
+                            for phase in self.tissue_phase_demo_dict[tissue_sample]
+                            for sample in self.tissue_phase_demo_dict[tissue_sample][phase]]
         
-
 
         self.header_name_qpos_psm1 = ["psm1_pose.position.x", "psm1_pose.position.y", "psm1_pose.position.z",
                                 "psm1_pose.orientation.x", "psm1_pose.orientation.y", "psm1_pose.orientation.z", "psm1_pose.orientation.w",
@@ -340,7 +365,8 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.quat_cp_psm1 = ["psm1_pose.orientation.x", "psm1_pose.orientation.y", "psm1_pose.orientation.z", "psm1_pose.orientation.w"]
         self.quat_cp_psm2 = ["psm2_pose.orientation.x", "psm2_pose.orientation.y", "psm2_pose.orientation.z", "psm2_pose.orientation.w"]
 
-        self.transforms = DataAug([224, 224])
+        # self.transforms = DataAug([224, 224])
+        self.transforms = DataAug([self.img_height, self.img_width])
 
         # self.__getitem__(0) # initialize self.is_sim
 
@@ -495,11 +521,15 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         img_r = cv2.imread(image_path_r)
         img_lw = cv2.imread(image_path_lw)
         img_rw = cv2.imread(image_path_rw)
-
-        img_l = cv2.resize(img_l, [224, 224])
-        img_r = cv2.resize(img_r, [224, 224])
-        img_lw = cv2.resize(img_lw, [224, 224])
-        img_rw = cv2.resize(img_rw, [224, 224])
+        # img_l = cv2.resize(img_l, [224, 224])
+        # img_r = cv2.resize(img_r, [224, 224])
+        # img_lw = cv2.resize(img_lw, [224, 224])
+        # img_rw = cv2.resize(img_rw, [224, 224])
+        img_l = cv2.resize(img_l, [self.img_height, self.img_width])
+        img_r = cv2.resize(img_r, [self.img_height, self.img_width])
+        img_lw = cv2.resize(img_lw, [self.img_height, self.img_width])
+        img_rw = cv2.resize(img_rw, [self.img_height, self.img_width])
+        
         img_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
         img_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
         img_lw = cv2.cvtColor(img_lw, cv2.COLOR_BGR2RGB)
