@@ -191,35 +191,52 @@ class DataAug(object):
         self.color_jitter = transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08)
 
         ## albumentations (pixel dropout, blur, brightness, contrast, gaussian blur)
+        min_height = max(1, img_hw[0] // 32)
+        min_width = max(1, img_hw[1] // 32)
+        max_height = min(img_hw[0] // 8, img_hw[0])
+        max_width = min(img_hw[1] // 8, img_hw[1])
+        # print("min_height:", min_height, "min_width:", min_width, "max_height:", max_height, "max_width:", max_width)
         self.albumentations_transforms = A.Compose([
-            A.CoarseDropout(max_holes=8, max_height=img_hw[0] // 8, max_width=img_hw[1] // 8, min_holes=1, min_height=img_hw[0] // 32, min_width=img_hw[1] // 32, fill_value=0, p=0.5),
+            A.CoarseDropout(max_holes=8, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
             A.OneOf([
                 A.Blur(blur_limit=3, p=0.5),
                 A.RandomBrightnessContrast(p=0.5),
                 A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-            ], p=1.0),
-            ToTensorV2()
+            ], p=1.0)
+            # ToTensorV2()
         ])
 
     def __call__(self, sample):
 
         img_l, img_r, img_lw, img_rw = sample
         cat_img = torch.cat((img_l, img_r), axis = 0)
-        cat_img_tf = self.composed(cat_img)
+        # print(cat_img.shape)
+        # print(f"Dropout parameters: {self.albumentations_transforms.transforms[0]}")
+        # print(img_l.shape, img_r.shape, img_lw.shape, img_rw.shape)
+        cat_img = cat_img.permute(1, 2, 0).cpu().numpy()
+        img_lw = img_lw.permute(1, 2, 0).cpu().numpy()
+        img_rw = img_rw.permute(1, 2, 0).cpu().numpy()
+        cat_img_tf = self.albumentations_transforms(image=np.array(cat_img))['image']
+        # img_r = self.albumentations_transforms(image=np.array(img_r))['image']
+        img_lw = self.albumentations_transforms(image=np.array(img_lw))['image']
+        img_rw = self.albumentations_transforms(image=np.array(img_rw))['image']
+
+
+        # Convert images back from (H, W, C) to (C, H, W) for PyTorch
+        cat_img_tf = torch.from_numpy(cat_img_tf).permute(2, 0, 1)
+        img_lw = torch.from_numpy(img_lw).permute(2, 0, 1)
+        img_rw = torch.from_numpy(img_rw).permute(2, 0, 1)
+
+        cat_img_tf = self.composed(cat_img_tf)
         img_lw = self.composed(img_lw)
         img_rw = self.composed(img_rw)
 
         img_l_tf, img_r_tf = cat_img_tf[0:3], cat_img_tf[3:]
+
         img_l_tf = self.color_jitter(img_l_tf)
         img_r_tf = self.color_jitter(img_r_tf)
         img_lw = self.color_jitter(img_lw)
         img_rw = self.color_jitter(img_rw)
-
-        img_l_tf = self.albumentations_transforms(image=np.array(img_l_tf))['image']
-        img_r_tf = self.albumentations_transforms(image=np.array(img_r_tf))['image']
-        img_lw = self.albumentations_transforms(image=np.array(img_lw))['image']
-        img_rw = self.albumentations_transforms(image=np.array(img_rw))['image']
-
         return {'img_l': img_l_tf,
                 'img_r': img_r_tf,
                 'img_lw': img_lw,
@@ -268,9 +285,12 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.is_sim = None
         self.cutting_action_pad_size = task_config['cutting_action_pad_size']
         self.img_height, self.img_width = [480, 640]
+        self.num_samples = task_config['num_episodes']
 
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
         self.tissue_phase_demo_dict = {}
+        self.command_embeddings_dict = {}
+
         for tissue_sample_id in tissue_sample_ids:
             if self.phantom:
                 tissue_sample_name = f"phantom_{tissue_sample_id}"
@@ -301,7 +321,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                 if phase_sample.endswith("_recovery"):
                     num_of_perfect_demos = len(os.listdir(os.path.join(tissue_sample_dir_path, phase_sample[:-9])))
                     num_of_recovery_demos = int(num_of_perfect_demos * self.recovery_ratio)
-                    print(f"Recovery phase: {phase_sample}, num of perfect demos: {num_of_perfect_demos}, num of recovery demos: {num_of_recovery_demos}")
+                    # print(f"Recovery phase: {phase_sample}, num of perfect demos: {num_of_perfect_demos}, num of recovery demos: {num_of_recovery_demos}")
                     demo_samples = demo_samples[:num_of_recovery_demos]
 
                 # Add or update the demo samples in the dictionary
@@ -309,7 +329,6 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
 
             ## create language embeddings
             if self.use_language:
-                self.command_embeddings_dict = {}
 
                 self.language_encoder = language_encoder
                 tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
@@ -327,14 +346,15 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                 del tokenizer, model
                 # print(f"   {phase_sample}, {demo_samples}\n")
         print("num of tissues:", len(self.tissue_phase_demo_dict.keys()))
-
+        
         print("num of samples:", sum(len(samples) for samples in self.tissue_phase_demo_dict.values()))
         total_count = 0
         for phase_dict in self.tissue_phase_demo_dict.values():
             for demo_samples in phase_dict.values():
                 total_count += len(demo_samples)
-
+        self.num_samples = total_count
         print("total count:", total_count)
+        print("self.command_embeddings_dict: ", self.command_embeddings_dict.keys())
 
         self.all_samples = [(tissue_sample, phase, sample) 
                             for tissue_sample in self.tissue_phase_demo_dict
@@ -485,15 +505,17 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         max_len = self.max_len
 
         # Get the tissue sample, phase, and sample based on the index
-
         episode_id = self.episode_ids[index]
-        tissue_sample, phase, sample = self.all_samples[episode_id]
+        if episode_id < self.num_samples:
+            tissue_sample, phase, sample = self.all_samples[episode_id]
+        else:
+            print("episode_id out of range")
+            tissue_sample, phase, sample = self.all_samples[episode_id % self.num_samples]
         dataset_path = os.path.join(self.dataset_dir, f"{tissue_sample}/{phase}/{sample}")
         # print(dataset_path)
         csv_path = os.path.join(dataset_path, "ee_csv.csv")
         csv = pd.read_csv(csv_path)
         episode_len = len(csv)
-
 
 
         start_ts = np.random.choice(episode_len)
@@ -525,11 +547,11 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         # img_r = cv2.resize(img_r, [224, 224])
         # img_lw = cv2.resize(img_lw, [224, 224])
         # img_rw = cv2.resize(img_rw, [224, 224])
-        img_l = cv2.resize(img_l, [self.img_height, self.img_width])
-        img_r = cv2.resize(img_r, [self.img_height, self.img_width])
-        img_lw = cv2.resize(img_lw, [self.img_height, self.img_width])
-        img_rw = cv2.resize(img_rw, [self.img_height, self.img_width])
-        
+        img_l = cv2.resize(img_l, [self.img_width, self.img_height])
+        img_r = cv2.resize(img_r, [self.img_width, self.img_height])
+        img_lw = cv2.resize(img_lw, [self.img_width, self.img_height])
+        img_rw = cv2.resize(img_rw, [self.img_width, self.img_height])
+
         img_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
         img_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
         img_lw = cv2.cvtColor(img_lw, cv2.COLOR_BGR2RGB)

@@ -52,8 +52,8 @@ TASK_CONFIGS = {
     'base_chole_clipping_cutting':{
         'dataset_dir': DATA_DIR + "/base_chole_clipping_cutting/",
         'phantom': False,
-        'num_episodes': 4587,
-        'tissue_samples_ids': [4, 5, 8, 12, 13, 14, 18],
+        'num_episodes': 4581,
+        'tissue_samples_ids': [4, 5, 8, 12, 13, 14, 18, 19],
         'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'cutting_action_pad_size': 10,

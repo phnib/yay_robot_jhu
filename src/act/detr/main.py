@@ -95,6 +95,7 @@ def build_ACT_model_and_optimizer(args_override):
         assert torch.cuda.device_count() > 1
         print(f"Using {torch.cuda.device_count()} GPUs")
         model = torch.nn.DataParallel(model)
+    # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
