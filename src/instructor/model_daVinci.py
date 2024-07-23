@@ -354,6 +354,7 @@ if __name__ == "__main__":
     one_hot_flag = True
     backbone_model_name = "clip"
     model_init_weights = "sda"
+    prediction_step_size = 30
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     input_transforms = []
@@ -369,8 +370,8 @@ if __name__ == "__main__":
     input_transforms = transforms.Compose(input_transforms)
 
     # Dataset and Dataloader parameters
-    dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging"
-    datasets_dir = [os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name)]
+    dataset_names = ["base_chole_clipping_cutting", "phantom_chole"] # "base_chole_clipping_cutting" "phantom_chole" "debugging"
+    datasets_dir = [os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) for dataset_name in dataset_names]
     num_episodes_list = [200]*len(datasets_dir)
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
@@ -394,6 +395,7 @@ if __name__ == "__main__":
         reduced_base_class_set_flag=reduced_base_class_set_flag,
         phase_history_len=phase_history_len,
         center_crop_flag=center_crop_flag,
+        prediction_step_size=prediction_step_size
     )    
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]

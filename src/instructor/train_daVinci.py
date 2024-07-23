@@ -123,7 +123,6 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     all_commands_gt = []
     all_decoded_texts = []
-    all_decoded_texts_masked = []
 
     if not one_hot_flag:
         all_predicted_embeddings = []
@@ -144,32 +143,12 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
             # Forward pass
             logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
-            
-            # TODO: Remove later (when decided to stick to phase history instead of postprocessing logic)
-            if not reduced_base_class_set_flag:
-                # Only consider current (gt) command and next command for the mask
-                # Get a list of the current commands
-                current_gt_command_idx = [model.command_to_index[cmd] for cmd in command_gt]
-                # Save here a mask that will only consider the gt command and the next command (later also recovery commands)
-                current_command_mask = torch.zeros_like(logits)
-                for idx, command_idx in enumerate(current_gt_command_idx):
-                    current_command_mask[idx, command_idx] = 1
-                    if command_idx < len(model.candidate_texts) - 1:
-                        current_command_mask[idx, command_idx+1] = 1
-                        
-                # Apply softmax and then set everything to 0 using the mask
-                logits_masked = torch.nn.functional.softmax(logits, dim=-1) * current_command_mask 
-                
-                # Get text for each prediction in the batch (masked by the current command)
-                decoded_texts_masked = model.decode_logits(logits_masked, temperature)
 
-            decoded_texts = model.decode_logits(logits, temperature) # Also get the text for the unmasked logits
+            decoded_texts = model.decode_logits(logits, temperature) 
 
             # Store the ground truth and predicted commands for the confusion matrix
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
-            if not reduced_base_class_set_flag:
-                all_decoded_texts_masked.extend(decoded_texts_masked)
 
             if not one_hot_flag:
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
@@ -205,28 +184,23 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     conf_matrix_folder_path = os.path.join(ckpt_dir, "confusion_matrices")
     if not os.path.exists(conf_matrix_folder_path):
         os.makedirs(conf_matrix_folder_path, exist_ok=True)
-    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_unmasked_{current_epoch}.png")
-    log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag, add_info="Unmasked")
-    if not reduced_base_class_set_flag:
-        log_confusion_matrix(all_commands_gt, all_decoded_texts_masked, candidate_texts, split_name, current_epoch, save_path.replace("unmasked", "masked"), log_wandb_flag, add_info="Masked")
-
-    # Compute metrics for unmasked and masked predictions
+    save_path = os.path.join(conf_matrix_folder_path, f"{split_name}_confusion_matrix_epoch_{current_epoch}.png")
+    log_confusion_matrix(all_commands_gt, all_decoded_texts, candidate_texts, split_name, current_epoch, save_path, log_wandb_flag)
+    
+    # Compute metrics 
     logger.info("")
-    for name, decoded_texts in zip(["", "Masked "], [all_decoded_texts, all_decoded_texts_masked]):
-        # Compute the success rate -> accurarcy
-        accurarcy_curr_epoch = accuracy_score(all_commands_gt, decoded_texts)
-        if args.log_wandb:
-            wandb.log({f"{name} Accurarcy": accurarcy_curr_epoch})
-            
-        # Compute the (macro) F1 score
-        f1_score_curr_epoch = f1_score(all_commands_gt, decoded_texts, average='macro')
-        if args.log_wandb:
-            wandb.log({f"{name} F1 Score": f1_score_curr_epoch})
+    # Compute the success rate -> accurarcy
+    accurarcy_curr_epoch = accuracy_score(all_commands_gt, decoded_texts)
+    if args.log_wandb:
+        wandb.log({f"Accurarcy": accurarcy_curr_epoch})
         
-        logger.info(f"Epoch {current_epoch}: {name}Accuracy = {accurarcy_curr_epoch * 100:.2f}% - {name}F1 Score = {f1_score_curr_epoch * 100:.2f}%")
-        
-        if reduced_base_class_set_flag:
-            break # Only compute the metrics for the unmasked predictions when using the reduced base class set
+    # Compute the (macro) F1 score
+    f1_score_curr_epoch = f1_score(all_commands_gt, decoded_texts, average='macro')
+    if args.log_wandb:
+        wandb.log({f"F1 Score": f1_score_curr_epoch})
+    
+    logger.info(f"Epoch {current_epoch}: Accuracy = {accurarcy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+
 
 # ----------------------------
 
@@ -269,7 +243,7 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
     canvas.save(save_path)
 
 
-def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, save_path=None, log_wandb_flag=True, add_info="Unmasked"):
+def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, save_path=None, log_wandb_flag=True):
     """
     Compute the confusion matrix for each criteria.
     
@@ -315,9 +289,9 @@ def log_confusion_matrix(y_true, y_pred, classes, split_name=None, epoch=None, s
     
     # Log the confusion matrix with WandB
     if epoch is not None:
-        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix ({add_info}) (Epoch {epoch})")
+        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix (Epoch {epoch})")
     else:
-        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix ({add_info})")
+        fig = plot_confusion_matrix(confusion_matrix(y_true, y_pred, labels=classes), classes=classes, title=f"Confusion Matrix")
     if log_wandb_flag:
         if split_name is None:
             wandb.log({"confusion_matrix": fig})
@@ -498,6 +472,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_phase_history_flag', action='store_true', help='Use the history as input to the model')
     parser.add_argument('--phase_history_len', action='store', type=int, help='phases_history_len', default=6)
     parser.add_argument('--use_transformer_flag', action='store_true', help='Use a transformer model instead of a linear layer')
+    parser.add_argument('--prediction_step_size', action='store', type=int, help='prediction_step_size (in number of frames)', default=30)
     # TODO: Decide later here on the augmentation mode used
     
     args = parser.parse_args()
@@ -558,7 +533,7 @@ if __name__ == "__main__":
     input_transforms = transforms.Compose(input_transforms)
 
     # Data loading
-    if args.dagger_ratio is not None and not args.test_only_flag:
+    if args.dagger_ratio and not args.test_only_flag:
         train_dataloader, ds_metadata_dict = load_merged_data(
             dataset_dirs=dataset_dirs,
             num_episodes_list=num_episodes_list,
@@ -577,6 +552,7 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
+            prediction_step_size=args.prediction_step_size
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -596,7 +572,8 @@ if __name__ == "__main__":
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
-            use_jaw_values_flag=args.use_jaw_values_flag
+            use_jaw_values_flag=args.use_jaw_values_flag,
+            prediction_step_size=args.prediction_step_size
         )
     else:
         test_dataloader, ds_metadata_dict = load_merged_data(
@@ -616,7 +593,8 @@ if __name__ == "__main__":
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
-            use_jaw_values_flag=args.use_jaw_values_flag
+            use_jaw_values_flag=args.use_jaw_values_flag,
+            prediction_step_size=args.prediction_step_size
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)

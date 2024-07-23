@@ -119,6 +119,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         use_phase_history_flag=False,
         use_jaw_values_flag=False,
         phase_history_len=6,
+        prediction_step_size=30,
     ):
         super().__init__()
         
@@ -139,6 +140,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.use_history_flag = use_phase_history_flag
         self.use_jaw_values_flag = use_jaw_values_flag
         self.phase_history_len = phase_history_len
+        self.prediction_step_size = prediction_step_size
         
         # Set the before_phase_offset and after_phase_offset
         dataset_name = os.path.basename(dataset_dir)
@@ -236,12 +238,11 @@ class SequenceDataset(torch.utils.data.Dataset):
         return jaw_psm2_psm1_data_sequence 
             
 
-    def get_phase_history(self, selected_phase_demo_dict, curr_ts):
+    def get_phase_history(self, selected_phase_demo_dict, curr_ts, prediction_step_size=30):
         # Returns the phase history for the last six phases based on the last performed phases (with padding if needed)
         
-        # TODO: Define the last ts more accurately (via args=!)
-        pred_frequency = 1 
-        last_pred_ts = curr_ts - 30 * pred_frequency
+        # Compute the last prediction timestep (until which the history will be considered)
+        last_pred_ts = curr_ts - prediction_step_size
         
         # Get the last 6 performed phases from the current phase on
         phase_history = deque(maxlen=self.phase_history_len)
@@ -315,7 +316,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # History information of the last six phases (with padding if needed)
         if self.use_history_flag:
-            phase_history = self.get_phase_history(selected_phase_demo_dict, curr_ts)
+            phase_history = self.get_phase_history(selected_phase_demo_dict, curr_ts, self.prediction_step_size)
         else:
             phase_history = None
         
@@ -372,6 +373,7 @@ def load_merged_data(
     use_phase_history_flag=False,
     use_jaw_values_flag=False,
     phase_history_len=6,
+    prediction_step_size=30,
 ):
     
     print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
@@ -414,10 +416,12 @@ def load_merged_data(
     ds_metadata_dict["use_history_flag"] = use_phase_history_flag
     ds_metadata_dict["use_jaw_values_flag"] = use_jaw_values_flag
     ds_metadata_dict["phase_history_len"] = phase_history_len
+    ds_metadata_dict["prediction_step_size"] = prediction_step_size
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
     command_embeddings_dict = {}
+    val_command_embeddings_dict_add_datasets = {}
     class_occ_cnt_dict = defaultdict(lambda: 0)
     for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
         # Load dataset dir and count number of tissue samples
@@ -465,7 +469,8 @@ def load_merged_data(
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
-                        phase_history_len)
+                        phase_history_len,
+                        prediction_step_size)
             )
             
             # Get dataset statistics
@@ -493,7 +498,8 @@ def load_merged_data(
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
-                        phase_history_len)
+                        phase_history_len,
+                        prediction_step_size)
             )
             val_datasets.append(SequenceDataset(
                         "val",
@@ -510,7 +516,8 @@ def load_merged_data(
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
-                        phase_history_len)
+                        phase_history_len,
+                        prediction_step_size)
             )
             
             # Get dataset statistics
@@ -522,15 +529,10 @@ def load_merged_data(
             # Get the command embeddings for the train and val datasets
             train_command_embeddings_dict = train_datasets[-1].command_embeddings_dict
             val_command_embeddings_dict = val_datasets[-1].command_embeddings_dict
-
-            # Check for same commands in train and val datasets
-            train_commands = set([command for command, _ in train_command_embeddings_dict.values()])
-            val_commands = set([command for command, _ in val_command_embeddings_dict.values()])
-            if train_commands != val_commands:
-                raise ValueError(f"Commands for validation does not match training commands.")
             
             # Update the command embeddings dictionary
             command_embeddings_dict.update(train_command_embeddings_dict)
+            val_command_embeddings_dict_add_datasets.update(val_command_embeddings_dict)
             
             # Add the class occurence ratio to the class_occ_ratio_dict
             for command, _ in train_datasets[-1].command_embeddings_dict.values():
@@ -553,7 +555,8 @@ def load_merged_data(
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
-                        phase_history_len)
+                        phase_history_len,
+                        prediction_step_size)
             )
             
             # Get dataset statistics
@@ -602,6 +605,13 @@ def load_merged_data(
         return train_dataloader, ds_metadata_dict
     
     elif not test_only:
+        # Check for if all val commands are in the training commands
+        train_commands = set([command for command, _ in command_embeddings_dict.values()])
+        val_commands = set([command for command, _ in val_command_embeddings_dict_add_datasets.values()])
+        if not val_commands.issubset(train_commands):
+            raise ValueError("Val commands are not subset of train commands.")
+        
+        
         # Merge all datasets (e.g., base dataset + fine tuning (correction) datasets) into one big dataset
         merged_train_dataset = ConcatDataset(train_datasets)
         merged_val_dataset = ConcatDataset(val_datasets)
@@ -680,13 +690,14 @@ if __name__ == "__main__":
     num_episodes = 200 # Number of randlomy generated stitched episodes
     reduced_base_class_set_flag = True
     phase_history_len = 6
+    prediction_step_size = 30
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     # TODO: Decide for the best augmentations
     input_transforms = []
     
     # Note: Automatic augmentations
-    input_transforms.append(transforms.RandAugment())
+    # input_transforms.append(transforms.RandAugment())
     # input_transforms.append(transforms.TrivialAugmentWide())
     # input_transforms.append(transforms.AugMix())
     
@@ -720,6 +731,7 @@ if __name__ == "__main__":
         use_phase_history_flag=True,
         use_jaw_values_flag=True,
         phase_history_len=phase_history_len,
+        prediction_step_size=prediction_step_size,
     )
 
     # Sample a random item from the dataset
