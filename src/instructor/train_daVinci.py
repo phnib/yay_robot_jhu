@@ -154,8 +154,11 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
                 all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
-            if plot_images_flag and (incorrect_img_cnt < max_num_images or correct_img_cnt < max_num_images): 
-                for img_idx, (gt, pred) in enumerate(zip(command_gt, decoded_texts)):            
+            if plot_images_flag and (incorrect_img_cnt < max_num_images or correct_img_cnt < max_num_images):
+                rnd_indices = list(torch.randperm(len(images))) # Randomly shuffle the indices - to get random images
+                for img_idx, rnd_idx in enumerate(rnd_indices):            
+                    gt, pred = command_gt[rnd_idx], decoded_texts[rnd_idx]
+                    
                     # Save incorrect prediction
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
@@ -190,12 +193,12 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     # Compute metrics 
     logger.info("")
     # Compute the success rate -> accurarcy
-    accurarcy_curr_epoch = accuracy_score(all_commands_gt, decoded_texts)
+    accurarcy_curr_epoch = accuracy_score(all_commands_gt, all_decoded_texts)
     if args.log_wandb:
         wandb.log({f"Accurarcy": accurarcy_curr_epoch})
         
     # Compute the (macro) F1 score
-    f1_score_curr_epoch = f1_score(all_commands_gt, decoded_texts, average='macro')
+    f1_score_curr_epoch = f1_score(all_commands_gt, all_decoded_texts, average='macro')
     if args.log_wandb:
         wandb.log({f"F1 Score": f1_score_curr_epoch})
     
@@ -444,6 +447,8 @@ if __name__ == "__main__":
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
     parser.add_argument('--weight_decay', action='store', type=float, help='weight_decay', default=0.01)
+    parser.add_argument('--lr_cycle', action='store', type=int, help='lr_cycle', default=50)
+    parser.add_argument('--min_lr', action='store', type=float, help='min_lr', default=5e-5)
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=3)
@@ -642,6 +647,8 @@ if __name__ == "__main__":
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
                              args.use_transformer_flag)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Add cosine annealing learning rate scheduler
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)
     if args.balanced_class_weights_flag and not args.test_only_flag:
         criterion = torch.nn.CrossEntropyLoss(weight=ds_metadata_dict["class_weights"].to(device)) # weight the loss based on the number of phases per language instruction
     else:
@@ -746,6 +753,9 @@ if __name__ == "__main__":
             if epoch - best_val_epoch >= args.early_stopping_interval:
                 logger.info(f"\nEarly stopping at epoch {epoch}")
                 break
+            
+        # Step the scheduler
+        scheduler.step()
 
     if args.log_wandb:
         wandb.finish()
