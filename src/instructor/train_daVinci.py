@@ -77,7 +77,7 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
                 pred = model.decode_logits(logits[img_idx].unsqueeze(0), temperature)[0]
 
                 save_path = os.path.join(ckpt_dir, "training_images", f"epoch_{current_epoch}_{batch_idx}_{img_idx}.jpg")
-                log_combined_image(images[img_idx], gt, pred, save_path)
+                log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path)
                 
                 if args.log_wandb:
                     wandb.log({f"Training Image {saved_img_cnt}": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
@@ -117,7 +117,7 @@ def evaluate(model, dataloader, criterion, device):
 
 
 def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckpt_dir,
-         max_num_images = 10, plot_images_flag=True, log_wandb_flag=True, reduced_base_class_set_flag=False):
+         max_num_images = 10, plot_images_flag=True, log_wandb_flag=True):
 
     model.eval()
 
@@ -163,14 +163,14 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
                         save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, save_path)
+                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path)
                         if args.log_wandb:
                             wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
                     # Save correct prediction
                     if pred == gt and correct_img_cnt < max_num_images:
                         correct_img_cnt += 1
                         save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, save_path)
+                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path)
                         if args.log_wandb:
                             wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
                 
@@ -207,7 +207,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
 # ----------------------------
 
-def log_combined_image(image, gt_text, pred_text, save_path=None):
+def log_combined_image(image, gt_text, pred_text, psm2_psm1_jaw_values=None, camera_names=None, save_path=None):
     # image = image[:, :, [2, 1, 0]]
 
     num_ts = image.shape[0]
@@ -216,7 +216,8 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
         # Extract frames for all timesteps and concatenate across width
         for t in range(num_ts):
             combined_image = torch.cat([image[t, cam_idx] for cam_idx in range(image.shape[1])], dim=-1)
-            if t == 0:
+            # TODO: Put the last jaw infos on the PSM2 and PSM1 images (check for the location of the PSMs via the camera names)
+            if t == 0: 
                 combined_image_all = combined_image
             else:
                 combined_image_all = torch.cat([combined_image_all, combined_image], dim=-2)
@@ -224,6 +225,7 @@ def log_combined_image(image, gt_text, pred_text, save_path=None):
     else:
         # Extract last frame and concatenate across width
         combined_image = torch.cat([image[-1, cam_idx] for cam_idx in range(image.shape[1])], dim=-1)
+        # TODO: Put the last jaw infos on the PSM2 and PSM1 images (check for the location of the PSMs via the camera names)
 
     # Convert to PIL image
     combined_image_pil = transforms.ToPILImage()(combined_image)
@@ -688,7 +690,7 @@ if __name__ == "__main__":
     if args.test_only_flag:
         latest_idx = next_idx-1
         test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, args.ckpt_dir, 
-             log_wandb_flag=args.log_wandb, reduced_base_class_set_flag=args.reduced_base_class_set_flag)
+             log_wandb_flag=args.log_wandb)
         exit()
 
     # Training loop
@@ -706,7 +708,7 @@ if __name__ == "__main__":
             # Test the model and log success rate every 200 epochs
             if (epoch + 1) % args.validation_interval == 0:
                 test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, plot_images_flag=args.plot_val_images_flag, 
-                     log_wandb_flag=args.log_wandb, reduced_base_class_set_flag=args.reduced_base_class_set_flag)
+                     log_wandb_flag=args.log_wandb)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
         # Log the losses locally
