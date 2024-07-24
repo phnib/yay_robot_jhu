@@ -17,10 +17,10 @@ TASK_CONFIGS = {
         'num_episodes': 1444,
         'phantom': True,
         'tissue_samples_ids': [1, 2, 3],
-        'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
+        'camera_file_suffixes':  ["_left.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'cutting_action_pad_size': 10,
-        "recovery_ratio": 0.1,
+        "recovery_ratio": 0.2,
         'action_mode': ['hybrid', 
                         {'max_': np.array([4.23075504e-04, 9.21509775e-04, 6.13676510e-04, 1.00000000e+00,
                                             4.95288465e-03, 2.07531063e-03, 3.96580366e-03, 1.00000000e+00,
@@ -47,17 +47,17 @@ TASK_CONFIGS = {
                         
         'norm_scheme': 'std',
         'save_frequency': 250,
-        'camera_names': ['left', 'right', 'left_wrist', 'right_wrist'],
+        'camera_names': ['left', 'left_wrist', 'right_wrist'],
     },
     'base_chole_clipping_cutting':{
         'dataset_dir': DATA_DIR + "/base_chole_clipping_cutting/",
         'phantom': False,
-        'num_episodes': 4581,
-        'tissue_samples_ids': [4, 5, 8, 12, 13, 14, 18, 19],
-        'camera_file_suffixes':  ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"],
+        'num_episodes': 5087,
+        'tissue_samples_ids': [4, 5, 6, 8, 12, 13, 14, 18],
+        'camera_file_suffixes':  ["_left.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'cutting_action_pad_size': 10,
-        "recovery_ratio": 0.1,
+        "recovery_ratio": 0.2,
         'action_mode': ['hybrid', 
                         {'max_': np.array([4.23075504e-04, 9.21509775e-04, 6.13676510e-04, 1.00000000e+00,
                                             4.95288465e-03, 2.07531063e-03, 3.96580366e-03, 1.00000000e+00,
@@ -84,6 +84,6 @@ TASK_CONFIGS = {
                         
         'norm_scheme': 'std',
         'save_frequency': 250,
-        'camera_names': ['left', 'right', 'left_wrist', 'right_wrist'],
+        'camera_names': ['left', 'left_wrist', 'right_wrist'],
     },
 }

@@ -40,6 +40,21 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+def rotate_image(image, angle):
+    """Rotate the image by the given angle."""
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h))
+    return rotated
+
+def shift_image(image, shift_x, shift_y):
+    """Shift the image by the given x and y offsets."""
+    (h, w) = image.shape[:2]
+    M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    shifted_image = cv2.warpAffine(image, M, (w, h))
+    return shifted_image
+
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
     phase_command_embeddings_dict = {}
@@ -178,9 +193,11 @@ class RandomCrop(object):
 class DataAug(object):
     """Convert ndarrays in sample to Tensors."""
 
-    def __init__(self, img_hw):
+    def __init__(self, img_hw, mask_prob=0.5):
         self.ratio = 0.95
         self.img_hw = img_hw # heigt width
+        self.mask_prob = mask_prob  # Probability to mask an image
+
         self.random_crop = transforms.RandomCrop(size=[int(self.img_hw[0] * self.ratio), 
                                                        int(self.img_hw[1] * self.ratio)])
         self.resize = transforms.Resize(self.img_hw, antialias=True)
@@ -200,7 +217,6 @@ class DataAug(object):
             A.CoarseDropout(max_holes=8, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
             A.OneOf([
                 A.Blur(blur_limit=3, p=0.5),
-                A.RandomBrightnessContrast(p=0.5),
                 A.GaussianBlur(blur_limit=(3, 7), p=0.5),
             ], p=1.0)
             # ToTensorV2()
@@ -208,37 +224,43 @@ class DataAug(object):
 
     def __call__(self, sample):
 
-        img_l, img_r, img_lw, img_rw = sample
-        cat_img = torch.cat((img_l, img_r), axis = 0)
+        img_l, img_lw, img_rw = sample
+        # cat_img = torch.cat((img_l, img_r), axis = 0)
         # print(cat_img.shape)
         # print(f"Dropout parameters: {self.albumentations_transforms.transforms[0]}")
         # print(img_l.shape, img_r.shape, img_lw.shape, img_rw.shape)
-        cat_img = cat_img.permute(1, 2, 0).cpu().numpy()
+        img_l = img_l.permute(1, 2, 0).cpu().numpy()
         img_lw = img_lw.permute(1, 2, 0).cpu().numpy()
         img_rw = img_rw.permute(1, 2, 0).cpu().numpy()
-        cat_img_tf = self.albumentations_transforms(image=np.array(cat_img))['image']
-        # img_r = self.albumentations_transforms(image=np.array(img_r))['image']
+
+        img_l = self.albumentations_transforms(image=np.array(img_l))['image']
         img_lw = self.albumentations_transforms(image=np.array(img_lw))['image']
         img_rw = self.albumentations_transforms(image=np.array(img_rw))['image']
 
-
         # Convert images back from (H, W, C) to (C, H, W) for PyTorch
-        cat_img_tf = torch.from_numpy(cat_img_tf).permute(2, 0, 1)
+        img_l = torch.from_numpy(img_l).permute(2, 0, 1)
         img_lw = torch.from_numpy(img_lw).permute(2, 0, 1)
         img_rw = torch.from_numpy(img_rw).permute(2, 0, 1)
 
-        cat_img_tf = self.composed(cat_img_tf)
+        img_l = self.composed(img_l)
         img_lw = self.composed(img_lw)
         img_rw = self.composed(img_rw)
 
-        img_l_tf, img_r_tf = cat_img_tf[0:3], cat_img_tf[3:]
-
-        img_l_tf = self.color_jitter(img_l_tf)
-        img_r_tf = self.color_jitter(img_r_tf)
+        img_l = self.color_jitter(img_l)
         img_lw = self.color_jitter(img_lw)
         img_rw = self.color_jitter(img_rw)
-        return {'img_l': img_l_tf,
-                'img_r': img_r_tf,
+
+        # Randomly mask out one of the images
+        if np.random.rand() < self.mask_prob:
+            mask_choice = np.random.choice(['img_l', 'img_lw', 'img_rw'])
+            if mask_choice == 'img_l':
+                img_l = torch.zeros_like(img_l)
+            elif mask_choice == 'img_lw':
+                img_lw = torch.zeros_like(img_lw)
+            elif mask_choice == 'img_rw':
+                img_rw = torch.zeros_like(img_rw)
+
+        return {'img_l': img_l,
                 'img_lw': img_lw,
                 'img_rw': img_rw}
 
@@ -284,7 +306,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.recovery_ratio = task_config['recovery_ratio']
         self.is_sim = None
         self.cutting_action_pad_size = task_config['cutting_action_pad_size']
-        self.img_height, self.img_width = [480, 640]
+        self.img_height, self.img_width = [240, 320]
         self.num_samples = task_config['num_episodes']
 
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
@@ -347,7 +369,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
                 # print(f"   {phase_sample}, {demo_samples}\n")
         print("num of tissues:", len(self.tissue_phase_demo_dict.keys()))
         
-        print("num of samples:", sum(len(samples) for samples in self.tissue_phase_demo_dict.values()))
+        # print("num of samples:", sum(len(samples) for samples in self.tissue_phase_demo_dict.values()))
         total_count = 0
         for phase_dict in self.tissue_phase_demo_dict.values():
             for demo_samples in phase_dict.values():
@@ -523,8 +545,8 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
             img_idx = episode_len - self.cutting_action_pad_size - 1
             image_path_l = os.path.join(dataset_path, "left_img_dir",
                                     "frame{:06d}".format(img_idx) + "_left.jpg")
-            image_path_r = os.path.join(dataset_path, "right_img_dir",
-                                    "frame{:06d}".format(img_idx) + "_right.jpg")
+            # image_path_r = os.path.join(dataset_path, "right_img_dir",
+            #                         "frame{:06d}".format(img_idx) + "_right.jpg")
             image_path_lw = os.path.join(dataset_path, "endo_psm2",
                                     "frame{:06d}".format(img_idx) + "_psm2.jpg")
             image_path_rw = os.path.join(dataset_path, "endo_psm1",
@@ -532,57 +554,69 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         else:
             image_path_l = os.path.join(dataset_path, "left_img_dir",
                                     "frame{:06d}".format(start_ts) + "_left.jpg")
-            image_path_r = os.path.join(dataset_path, "right_img_dir",
-                                    "frame{:06d}".format(start_ts) + "_right.jpg")
+            # image_path_r = os.path.join(dataset_path, "right_img_dir",
+            #                         "frame{:06d}".format(start_ts) + "_right.jpg")
             image_path_lw = os.path.join(dataset_path, "endo_psm2",
                                     "frame{:06d}".format(start_ts) + "_psm2.jpg")
             image_path_rw = os.path.join(dataset_path, "endo_psm1",
                                     "frame{:06d}".format(start_ts) + "_psm1.jpg")
         
         img_l = cv2.imread(image_path_l)
-        img_r = cv2.imread(image_path_r)
+        # img_r = cv2.imread(image_path_r)
         img_lw = cv2.imread(image_path_lw)
         img_rw = cv2.imread(image_path_rw)
         # img_l = cv2.resize(img_l, [224, 224])
         # img_r = cv2.resize(img_r, [224, 224])
         # img_lw = cv2.resize(img_lw, [224, 224])
         # img_rw = cv2.resize(img_rw, [224, 224])
+
+        ## rectify rotation of the right wrist cam
+        rotate_ids = [5, 6, 8, 12, 13, 14, 18]
+        for rotate_id in rotate_ids:
+            if not self.phantom and tissue_sample.endswith(f"{rotate_id}"):
+                angle = -52.0
+                img_rw = rotate_image(img_rw, angle)
+                shift_x, shift_y = 10, 0 
+                img_rw = shift_image(img_rw, shift_x, shift_y)
+                break  # Exit the loop after the first match
+
         img_l = cv2.resize(img_l, [self.img_width, self.img_height])
-        img_r = cv2.resize(img_r, [self.img_width, self.img_height])
+        # img_r = cv2.resize(img_r, [self.img_width, self.img_height])
         img_lw = cv2.resize(img_lw, [self.img_width, self.img_height])
         img_rw = cv2.resize(img_rw, [self.img_width, self.img_height])
 
         img_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
-        img_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
+        # img_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
         img_lw = cv2.cvtColor(img_lw, cv2.COLOR_BGR2RGB)
         img_rw = cv2.cvtColor(img_rw, cv2.COLOR_BGR2RGB)
 
         # construct observations
         img_l = torch.from_numpy(img_l).float() # channel last
-        img_r = torch.from_numpy(img_r).float()
+        # img_r = torch.from_numpy(img_r).float()
         img_lw = torch.from_numpy(img_lw).float() # channel last
         img_rw = torch.from_numpy(img_rw).float() # channel last
 
         # bring channel to to the third
         img_l = torch.einsum('h w c -> c h w', img_l)
-        img_r = torch.einsum('h w c -> c h w', img_r)
+        # img_r = torch.einsum('h w c -> c h w', img_r)
         img_lw = torch.einsum('h w c -> c h w', img_lw)
         img_rw = torch.einsum('h w c -> c h w', img_rw)
 
         # normalize image and change dtype to float
         img_l = img_l / 255.0
-        img_r = img_r / 255.0
+        # img_r = img_r / 255.0
         img_lw = img_lw / 255.0
         img_rw = img_rw / 255.0
 
         # data aug
-        tfmed = self.transforms([img_l, img_r, img_lw, img_rw])
+        tfmed = self.transforms([img_l, img_lw, img_rw])
+        # tfmed = self.transforms([img_l, img_r, img_lw, img_rw])
         img_l = tfmed['img_l']
-        img_r = tfmed['img_r']
+        # img_r = tfmed['img_r']
         img_lw = tfmed['img_lw']
         img_rw = tfmed['img_rw']
 
-        image_data = np.stack([img_l, img_r, img_lw, img_rw], axis = 0) 
+        image_data = np.stack([img_l, img_lw, img_rw], axis = 0) 
         
         # get current position and actions
         qpos_psm1 = csv[self.header_name_qpos_psm1].iloc[start_ts, :].to_numpy()
