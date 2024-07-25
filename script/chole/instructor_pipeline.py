@@ -5,6 +5,7 @@ import os
 from collections import defaultdict, deque
 import contextlib
 import sys
+import signal
 
 import cv2
 import pandas as pd
@@ -40,6 +41,14 @@ def measure_execution_time(label, execution_times_dict):
         end_time = time.time()
         execution_time = end_time - start_time
         execution_times_dict[label].append(execution_time)
+
+# Triggering smooth stopping of the instructor pipeline when pressing Ctrl+c
+exit_flag = False
+def signal_handler(sig, frame):
+    global exit_flag
+    print('\nStopping the instructor pipeline...\n')
+    exit_flag = True
+signal.signal(signal.SIGINT, signal_handler)
 
 # -------------- ROS Subscriber Callbacks --------------
 
@@ -198,9 +207,9 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
                 # Convert the image to RGB
                 if camera_name in ["left_img_dir", "right_img_dir"]:
                     camera_frame = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
-                current_frames_transformed.append(camera_frame)
+                current_frames_transformed.append(torch.tensor(camera_frame.transpose(2, 0, 1)) / 255.0) # Shape: c, h, w
         
-        return True, torch.stack(current_frames_transformed, dim=0) # Shape: cam, c, h, w # TODO: Check for correct shape
+        return True, torch.stack(current_frames_transformed, dim=0) # Shape: cam, c, h, w 
         
         
     elif input_type == "random":
@@ -213,7 +222,7 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
     
     
 def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None, upscaling_factor=2, 
-                             visualization_flag=True, current_jaw_values=None):
+                             visualization_flag=True, current_jaw_values=None, phase_history=None):
     # Visualize the current frames (with the current language instruction prediction - if also gt is given then also visualize that)
     
     # Concatenate the frames together
@@ -237,8 +246,13 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
     # Add the jaw values to right side of the image
     if current_jaw_values is not None:
         jaw_text = f"Jaw values: PSM2: {current_jaw_values[1]:.2f}, PSM1: {current_jaw_values[0]:.2f}"
-        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500 # TODO: Reasonable?
+        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500
         cv2.putText(current_frames_concatenated_bgr_upscaled, jaw_text, (jaw_text_position_x, 25), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    if phase_history is not None:
+        phase_history_text = f"Phase history: {phase_history}"
+        phase_history_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500
+        phase_history_text_position_y = 60 if current_jaw_values is not None else 25
+        cv2.putText(current_frames_concatenated_bgr_upscaled, phase_history_text, (phase_history_text_position_x, phase_history_text_position_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     
     # Show the concatenated frames
     if visualization_flag:
@@ -275,7 +289,7 @@ def instructor_pipeline(args):
     # Define the output folder
     timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
     ckpt_name = os.path.basename(args.ckpt_path)
-    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"tissue_{args.tissue_id}_{timestamp=}")
+    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"tissue_{args.tissue_name}_{timestamp=}")
     
     # Create the recordings folder if it does not exist
     if not os.path.exists(output_folder_path):
@@ -327,31 +341,33 @@ def instructor_pipeline(args):
         rate = rospy.Rate(args.fps)
         
         # Instructor publisher for the language instruction prediction
-        instruction_publisher = rospy.Publisher("/instructor_prediction", String) 
-        instruction_embedding_publisher = rospy.Publisher("/instructor_embedding", Float32MultiArray) # TODO: Check if this is the correct type?
+        instruction_publisher = rospy.Publisher("/instructor_prediction", String, queue_size=args.publisher_queue_size) 
+        instruction_embedding_publisher = rospy.Publisher("/instructor_embedding", Float32MultiArray, queue_size=args.publisher_queue_size)
         
         # Wrist camera subs
         if "endo_psm1" in args.camera_names:
-            endo_psm1_sub = rospy.Subscriber("/PSM1/endoscope_img", Image, psm1_wrist_camera_callback)
+            endo_psm1_sub = rospy.Subscriber("/PSM1/endoscope_img", Image, psm1_wrist_camera_callback, queue_size=args.subscriber_queue_size)
         if "endo_psm2" in args.camera_names:
-            endo_psm2_sub = rospy.Subscriber("/PSM2/endoscope_img", Image, psm2_wrist_camera_callback)
+            endo_psm2_sub = rospy.Subscriber("/PSM2/endoscope_img", Image, psm2_wrist_camera_callback, queue_size=args.subscriber_queue_size)
         
         # Endoscope imgs
         if "left_img_dir" in args.camera_names:
-            left_img_dir_sub = rospy.Subscriber("/jhu_daVinci/left/image_raw", Image, left_camera_callback)
+            left_img_dir_sub = rospy.Subscriber("/jhu_daVinci/left/image_raw", Image, left_camera_callback, queue_size=args.subscriber_queue_size)
         if "right_img_dir" in args.camera_names:
-            right_img_dir_sub = rospy.Subscriber("/jhu_daVinci/right/image_raw", Image, right_camera_callback)
+            right_img_dir_sub = rospy.Subscriber("/jhu_daVinci/right/image_raw", Image, right_camera_callback, queue_size=args.subscriber_queue_size)
             
         # Jaw values
         if use_jaw_values_flag:
-            psm1_jaw_sub = rospy.Subscriber("PSM1/jaw/measured_js", JointState, psm1_jaw_callback)
-            psm2_jaw_sub = rospy.Subscriber("PSM2/jaw/measured_js", JointState, psm2_jaw_callback)
+            psm1_jaw_sub = rospy.Subscriber("PSM1/jaw/measured_js", JointState, psm1_jaw_callback, queue_size=args.subscriber_queue_size)
+            psm2_jaw_sub = rospy.Subscriber("PSM2/jaw/measured_js", JointState, psm2_jaw_callback, queue_size=args.subscriber_queue_size)
+        
+        time.sleep(1) # Wait for the subscribers to be initialized
         
     # -------------- Init the recorded episode data (if random) --------------
     
     if args.input_type == "random":
         # Generate a random episode
-        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_id, args.camera_names, args.camera_name_file_suffix_dict, args.downsampling_shape, center_crop_flag) 
+        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, args.downsampling_shape, center_crop_flag) 
     
         # Check if the gt instructions are within the learned instructions of the model
         gt_instructions_set = set(episode_gt_instruction_sequence)
@@ -390,7 +406,7 @@ def instructor_pipeline(args):
         model_input_jaw_values_tensor = None
     
     frame_idx = 0
-    while True:
+    while not exit_flag:
         with measure_execution_time("Total inference time", execution_times_dict):
             # -------------- Load current jaw values + camera frames --------------
 
@@ -438,24 +454,37 @@ def instructor_pipeline(args):
                         print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     # Decode the model output to the language instruction
                     predicted_instruction = instructor_model.decode_logits(logits, temperature)[0]
+                    instruction_pred_list.append(predicted_instruction)
+                    
+                    # Publish the predicted language instruction
+                    if args.input_type == "live": 
+                        instruction_publisher.publish(predicted_instruction)
+                        instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))  
+                    
+                    # # TODO: Remove later again - debugging
+                    # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
+                    # log_combined_image(model_input_frames_tensor[0], predicted_instruction, predicted_instruction, save_path=save_path)
+                    # print(f"Java values: {model_input_jaw_values_tensor}")
+                    # print(f"Phase history: {model_input_phase_history}")
+                    # exit()
+                    
+                    # Evaluate the prediction (if gt instruction is available --> in offline case)
                     if args.input_type == "random":
                         gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset] if frame_idx + prediction_offset < len(episode_gt_instruction_sequence) else gt_instruction # Get the gt instruction (if available) - repeat last gt instruction if end of episode (by the prediction offset)
                         instruction_gt_list.append(gt_instruction)
-                        instruction_pred_list.append(predicted_instruction)
                         
                         if gt_instruction == predicted_instruction:
                             print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction}")
                         else:
                             print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction} --> Wrong prediction")
                         
-                        # TODO: Remove later again - debugging
+                        # # TODO: Remove later again - debugging
                         # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
                         # log_combined_image(model_input_frames_tensor[0], gt_instruction, predicted_instruction, save_path=save_path)
                         # print(f"Java values: {model_input_jaw_values_tensor}")
                         # print(f"Phase history: {model_input_phase_history}")
                         # exit()
-                        
-                        
+        
             elif frame_idx == 0:
                 # Wait with predictions until the history length is reached and begin with the first instruction (which is the same for all demos)
                 predicted_instruction = candidate_texts[0]
@@ -463,10 +492,10 @@ def instructor_pipeline(args):
                 if args.input_type == "random":
                     gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
             
-            # Publish the predicted language instruction
-            if args.input_type == "live":
-                instruction_publisher.publish(predicted_instruction)
-                instruction_embedding_publisher.publish(predicted_embedding) # TODO: Check if I need to convert to cpu and numpy array first?          
+                # Publish the predicted language instruction
+                if args.input_type == "live": 
+                    instruction_publisher.publish(predicted_instruction)
+                    instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))      
             
             # Update the phase history list
             if use_phase_history_flag:
@@ -485,10 +514,10 @@ def instructor_pipeline(args):
                     # Visualization of the predicted language instruction
                     if args.input_type == "random":
                         annotated_frame = visualize_current_frames(current_frames, predicted_instruction, gt_instruction, upscaling_factor=args.upscaling_factor,
-                                                                   visualization_flag=args.visualization_flag, current_jaw_values=current_jaw_values)
+                                                                   visualization_flag=args.visualization_flag, current_jaw_values=current_jaw_values, phase_history=phase_history)
                     else:
                         annotated_frame = visualize_current_frames(current_frames, predicted_instruction, upscaling_factor=args.upscaling_factor,
-                                                                   visualization_flag=args.visualization_flag, current_jaw_values=current_jaw_values)
+                                                                   visualization_flag=args.visualization_flag, current_jaw_values=current_jaw_values, phase_history=phase_history)
             
             if args.save_video_flag:
                 concat_frame_list.append(annotated_frame)
@@ -538,7 +567,7 @@ def instructor_pipeline(args):
         if args.input_type == "live":
             video_file_path = os.path.join(output_folder_path, f'{args.input_type}_{timestamp=}.mp4')
         else:
-            additional_info = args.tissue_id
+            additional_info = args.tissue_name
             video_file_path = os.path.join(output_folder_path, f'{args.input_type}_{additional_info}_{timestamp=}.mp4')
         video_dim = concat_frame_list[-1].shape[:2][::-1]
         out = cv2.VideoWriter(video_file_path, fourcc, args.fps, video_dim)
@@ -550,14 +579,14 @@ def instructor_pipeline(args):
 
     # ----------------------- Evaluation ----------------------------
 
-    print("\n----------------------- Evaluation ----------------------------\n")
+    print("\n----------------------- Evaluation ----------------------------")
 
     # Evaluate the language instruction prediction
     if args.input_type == "random":
         metrics_dict = evaluate_instruction_prediction(instruction_pred_list, instruction_gt_list, candidate_texts, timestamp, output_folder_path)
 
         # Phase prediction evaluation
-        print(f"Accuracy: {metrics_dict['accuracy']*100:.2f}")
+        print(f"\nAccuracy: {metrics_dict['accuracy']*100:.2f}")
         print(f"F1 score: {metrics_dict['f1_score']*100:.2f}")
     
     # Print average timings (for all different components, with keys in the dict + the total inference time)
@@ -565,7 +594,7 @@ def instructor_pipeline(args):
     for key, value in execution_times_dict.items():
         if key != "Total inference time":
             print(f"{key}: {np.mean(value)*1000:.2f} ms")
-    print(f"Total inference time: {np.mean(execution_times_dict['Total inference time'])*1000:.2f} ms")   
+    print(f"Total inference time: {np.mean(execution_times_dict['Total inference time'])*1000:.2f} ms") 
     
 
 # -------------------------------- Create parser --------------------------------
@@ -589,10 +618,11 @@ def parse_pipeline_args():
     # Prediction stride value to only predict every x frames
     parser.add_argument('--prediction_stride', type=int, default=30, help="Prediction stride value (e.g., predict every x frames)")
 
+
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="random",
+    parser.add_argument('--input_type', type=str, default="live",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
@@ -608,9 +638,6 @@ def parse_pipeline_args():
     # Low level policy speed ratio (as the low level policy is slower than the high level policy) - set when ll policy will be used
     parser.add_argument('--ll_policy_slowness_factor', type=int, default=1, help="Speed ratio of the low level policy compared to the high level policy")
     
-    # Fps (for ros communication)
-    parser.add_argument('--fps', type=int, default=30, help="FPS of the ROS node")
-    
     # Camera names - based on the order of the cameras, the images will be stacked together as model input
     parser.add_argument('--camera_names', type=str, nargs='+', default=["endo_psm2", "left_img_dir", "endo_psm1"], help="Names of the cameras") # Possible cameras: "endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"
     
@@ -624,8 +651,11 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_13"
-    parser.add_argument('--tissue_id', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
+    default_tissue_sample = "tissue_18"
+    parser.add_argument('--tissue_name', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
+    
+    
+    # --------------------------- Visualization & Evaluation parameters ---------------------------
     
     # Upscaling factor for the visualization
     parser.add_argument('--upscaling_factor', type=int, default=2, help="Upscaling factor for the visualization of the frames")
@@ -641,6 +671,18 @@ def parse_pipeline_args():
     # Add log execution times flag
     parser.add_argument('--log_execution_times_during_execution_flag', action='store_true', default=False,
                     help="Flag to log the execution times of the different components")
+
+
+    # --------------------------- ROS communication parameters ---------------------------
+    
+    # Fps (for ros communication)
+    parser.add_argument('--fps', type=int, default=30, help="FPS of the ROS node")
+    
+    # Subscriber queue size    
+    parser.add_argument('--subscriber_queue_size', type=int, default=1, help="Queue size for the ROS subscriber")
+    
+    # Publisher queue size
+    parser.add_argument('--publisher_queue_size', type=int, default=0, help="Queue size for the ROS publisher")
 
     # ----------------------------------------------------------------------------------------------
 
