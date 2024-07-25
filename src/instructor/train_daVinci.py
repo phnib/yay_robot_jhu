@@ -77,7 +77,7 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
                 pred = model.decode_logits(logits[img_idx].unsqueeze(0), temperature)[0]
 
                 save_path = os.path.join(ckpt_dir, "training_images", f"epoch_{current_epoch}_{batch_idx}_{img_idx}.jpg")
-                log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path)
+                log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                 
                 if args.log_wandb:
                     wandb.log({f"Training Image {saved_img_cnt}": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
@@ -163,14 +163,14 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
                         save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path)
+                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                         if args.log_wandb:
                             wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
                     # Save correct prediction
                     if pred == gt and correct_img_cnt < max_num_images:
                         correct_img_cnt += 1
                         save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path)
+                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                         if args.log_wandb:
                             wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
                 
@@ -207,15 +207,14 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
 # ----------------------------
 
-def log_combined_image(image, gt_text, pred_text, psm2_psm1_jaw_values=None, camera_names=None, save_path=None):
-    # image = image[:, :, [2, 1, 0]]
+def log_combined_image(images, gt_text, pred_text, psm2_psm1_jaw_values=None, camera_names=None, save_path=None):
 
-    num_ts = image.shape[0]
+    num_ts = images.shape[0]
     
     if num_ts <= 5:
         # Extract frames for all timesteps and concatenate across width
         for t in range(num_ts):
-            combined_image = torch.cat([image[t, cam_idx] for cam_idx in range(image.shape[1])], dim=-1)
+            combined_image = torch.cat([images[t, cam_idx] for cam_idx in range(images.shape[1])], dim=-1)
             # TODO: Put the last jaw infos on the PSM2 and PSM1 images (check for the location of the PSMs via the camera names)
             if t == 0: 
                 combined_image_all = combined_image
@@ -224,7 +223,7 @@ def log_combined_image(image, gt_text, pred_text, psm2_psm1_jaw_values=None, cam
         combined_image = combined_image_all
     else:
         # Extract last frame and concatenate across width
-        combined_image = torch.cat([image[-1, cam_idx] for cam_idx in range(image.shape[1])], dim=-1)
+        combined_image = torch.cat([images[-1, cam_idx] for cam_idx in range(images.shape[1])], dim=-1)
         # TODO: Put the last jaw infos on the PSM2 and PSM1 images (check for the location of the PSMs via the camera names)
 
     # Convert to PIL image
