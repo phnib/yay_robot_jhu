@@ -247,7 +247,7 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
     return current_frames_concatenated_bgr_upscaled # Return the annotated frame for saving the video
 
 
-def evaluate_instruction_prediction(predictions, ground_truths, timestamp, save_folder_path):
+def evaluate_instruction_prediction(predictions, ground_truths, all_phases, timestamp, save_folder_path):
     # Init metrics dict
     metrics_dict = {}
     
@@ -256,9 +256,8 @@ def evaluate_instruction_prediction(predictions, ground_truths, timestamp, save_
     metrics_dict["f1_score"] = f1_score(ground_truths, predictions, average="macro")
     
     # Save the confusion matrix function from the training script 
-    language_commands = list(np.unique(ground_truths))
     save_path = os.path.join(save_folder_path, f"confusion_matrix_{timestamp}.png")
-    log_confusion_matrix(ground_truths, predictions, language_commands, save_path=save_path, log_wandb_flag=False)
+    log_confusion_matrix(ground_truths, predictions, all_phases, save_path=save_path, log_wandb_flag=False)
 
     return metrics_dict
 
@@ -395,55 +394,61 @@ def instructor_pipeline(args):
         with measure_execution_time("Total inference time", execution_times_dict):
             # -------------- Load current jaw values + camera frames --------------
 
-            if use_jaw_values_flag:
-                with measure_execution_time("Loading jaw values time", execution_times_dict):
-                    if args.input_type == "random":
-                        success, current_jaw_values = get_current_jaw_values(args.input_type, frame_idx=frame_idx, random_episode_jaw_value_sequence=jaw_values_episode_sequence)
-                    elif args.input_type == "live":
-                        success, current_jaw_values = get_current_jaw_values(args.input_type)
-                    # Break out of the loop if the jaw values could not be loaded (e.g., end of the episode)
-                    if not success:
-                        break
-            else:
-                current_jaw_values = None
+            if args.visualization_flag or args.save_video_flag or frame_idx % history_step_size*args.ll_policy_slowness_factor == 0: # Only load the frames if they are needed (for visualization, saving video, or for the model input)
+                if use_jaw_values_flag:
+                    with measure_execution_time("Loading jaw values time", execution_times_dict):
+                        if args.input_type == "random":
+                            success, current_jaw_values = get_current_jaw_values(args.input_type, frame_idx=frame_idx, random_episode_jaw_value_sequence=jaw_values_episode_sequence)
+                        elif args.input_type == "live":
+                            success, current_jaw_values = get_current_jaw_values(args.input_type)
+                        # Break out of the loop if the jaw values could not be loaded (e.g., end of the episode)
+                        if not success:
+                            break
+                else:
+                    current_jaw_values = None
 
-            with measure_execution_time("Loading video frame time", execution_times_dict):
-                if args.input_type == "random":
-                    success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx, random_episode_frame_sequence=frame_episode_sequence)
-                elif args.input_type == "live":
-                    success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, camera_names=args.camera_names)
-                # Break out of the loop if the image could not be loaded (e.g., frame could not be loaded)
-                if not success:
-                    break   # Stop the loop and save the video up to here (if desired)
-                # Add the current frames to the model input frames + generate current input tensor
+                with measure_execution_time("Loading video frame time", execution_times_dict):
+                    if args.input_type == "random":
+                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx, random_episode_frame_sequence=frame_episode_sequence)
+                    elif args.input_type == "live":
+                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, camera_names=args.camera_names)
+                    # Break out of the loop if the image could not be loaded (e.g., frame could not be loaded)
+                    if not success:
+                        break   # Stop the loop and save the video up to here (if desired)
+                    # Add the current frames to the model input frames + generate current input tensor
+                    
+                    # Add frames and jaw values to model input based on the history step size (and dependent of the slower speed of the low level policy)
+                    if frame_idx % history_step_size*args.ll_policy_slowness_factor == 0:
+                        model_input_frames.append(current_frames)
+                        model_input_frames_tensor = torch.stack(list(model_input_frames), dim=0).to(device).unsqueeze(0) # Shape: batch_size (=1), history_len, cam, c, h, w 
                 
-                # Add frames and jaw values to model input based on the history step size (and dependent of the slower speed of the low level policy)
-                if frame_idx % history_step_size*args.ll_policy_speed_ratio == 0:
-                    model_input_frames.append(current_frames)
-                    model_input_frames_tensor = torch.stack(list(model_input_frames), dim=0).to(device).unsqueeze(0) # Shape: batch_size (=1), history_len, cam, c, h, w 
-            
-                    if use_jaw_values_flag:
-                        model_input_jaw_values.append(current_jaw_values)
-                        model_input_jaw_values_tensor = torch.stack(list(model_input_jaw_values), dim=0).to(device).unsqueeze(0) # Shape: batch_size (=1), history_len, 2
+                        if use_jaw_values_flag:
+                            model_input_jaw_values.append(current_jaw_values)
+                            model_input_jaw_values_tensor = torch.stack(list(model_input_jaw_values), dim=0).to(device).unsqueeze(0) # Shape: batch_size (=1), history_len, 2
             
             # -------------- Predict (+publish) the language instruction --------------
             
             # Start with predictions after the history length is reached and predict every x frames and not at the beginning (as starting with the first phase)
             # TODO: Maybe adjust later that it already is able to predict with less frames (after training with masking)
-            if frame_idx % args.prediction_stride == 0 and len(model_input_frames) == history_len+1 and frame_idx != 0:
+            if frame_idx % args.prediction_stride*args.ll_policy_slowness_factor == 0 and len(model_input_frames) == history_len+1 and frame_idx != 0:
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
                     logits, temperature, predicted_embedding = instructor_model(model_input_frames_tensor, model_input_jaw_values_tensor, model_input_phase_history)
-                
+                    if args.input_type == "live":
+                        print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     # Decode the model output to the language instruction
                     predicted_instruction = instructor_model.decode_logits(logits, temperature)[0]
-                    print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     if args.input_type == "random":
                         gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset] if frame_idx + prediction_offset < len(episode_gt_instruction_sequence) else gt_instruction # Get the gt instruction (if available) - repeat last gt instruction if end of episode (by the prediction offset)
                         instruction_gt_list.append(gt_instruction)
                         instruction_pred_list.append(predicted_instruction)
                         
-                        # # TODO: Remove later again - debugging
+                        if gt_instruction == predicted_instruction:
+                            print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction}")
+                        else:
+                            print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction} --> Wrong prediction")
+                        
+                        # TODO: Remove later again - debugging
                         # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
                         # log_combined_image(model_input_frames_tensor[0], gt_instruction, predicted_instruction, save_path=save_path)
                         # print(f"Java values: {model_input_jaw_values_tensor}")
@@ -549,7 +554,7 @@ def instructor_pipeline(args):
 
     # Evaluate the language instruction prediction
     if args.input_type == "random":
-        metrics_dict = evaluate_instruction_prediction(instruction_pred_list, instruction_gt_list, timestamp, output_folder_path)
+        metrics_dict = evaluate_instruction_prediction(instruction_pred_list, instruction_gt_list, candidate_texts, timestamp, output_folder_path)
 
         # Phase prediction evaluation
         print(f"Accuracy: {metrics_dict['accuracy']*100:.2f}")
@@ -601,7 +606,7 @@ def parse_pipeline_args():
     parser.add_argument('--starting_phase_idx', type=str, default=None, help="Starting phase index for the random generated episode (None or 0 when starting from the beginning)")
     
     # Low level policy speed ratio (as the low level policy is slower than the high level policy) - set when ll policy will be used
-    parser.add_argument('--ll_policy_speed_ratio', type=int, default=1, help="Speed ratio of the low level policy compared to the high level policy")
+    parser.add_argument('--ll_policy_slowness_factor', type=int, default=1, help="Speed ratio of the low level policy compared to the high level policy")
     
     # Fps (for ros communication)
     parser.add_argument('--fps', type=int, default=30, help="FPS of the ROS node")
