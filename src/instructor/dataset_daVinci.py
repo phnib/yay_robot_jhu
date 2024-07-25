@@ -42,7 +42,7 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
         if reduced_base_class_set_flag:
             # Reduce base instruction set (keep finetuining instructions)
             if phase_idx in phase_idx_to_instruction_mapping:
-                phase_command_prefix = "correcting " if "recovery" in phase_command else "" # Add prefix for recovery phases
+                phase_command_prefix = "correcting " if "recovery" in phase_command else "" # Add prefix for recovery phases # TODO: Remove if we don't predict the recovery phases
                 phase_command = phase_command_prefix + phase_idx_to_instruction_mapping[phase_idx]
                 
         embedding = encode_text(phase_command, encoder, tokenizer, model)
@@ -50,7 +50,7 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
 
     return phase_command_embeddings_dict
 
-def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio, test_only_flag):
+def split_tissue_samples(dataset_dir, tissue_names, train_ratio, val_ratio, test_only_flag):
     # Calculate the number of samples for each set
     if dataset_dir == "base_chole_clipping_cutting":
         tissue_names.remove("tissue_1") # Remove tissue_1 from the dataset as not complete
@@ -383,11 +383,10 @@ def load_merged_data(
     
     ds_metadata_dict = {}
     if dagger_ratio is None:
-        # TODO: Later reset again to reasonable splits
         # Obtain train/val/test split
         train_ratio = 0.9
         val_ratio = 0.1
-        test_ratio = 0 # 1 - train_ratio - val_ratio
+        test_ratio = 1 - train_ratio - val_ratio
     else:
         train_ratio = 1
         val_ratio = test_ratio = 0
@@ -434,7 +433,7 @@ def load_merged_data(
         if dagger_ratio is None:
             # Split the tissue samples into train, val, test by randomly sampling until the ratios are fulfilled
             train_tissues, val_tissues, test_tissues = split_tissue_samples(
-                dataset_dir, tissue_names, train_ratio, val_ratio, test_ratio, test_only
+                dataset_dir, tissue_names, train_ratio, val_ratio, test_only
             )
             print(f"\nDataset: {dataset_dir}")
             print(f"Train tissues: {train_tissues}")
@@ -688,7 +687,7 @@ if __name__ == "__main__":
     prediction_offset = 0 # Get command for the current timestep
     history_step_size = 10
     num_episodes = 200 # Number of randlomy generated stitched episodes
-    reduced_base_class_set_flag = True
+    reduced_base_class_set_flag = False
     phase_history_len = 6
     prediction_step_size = 30
 
