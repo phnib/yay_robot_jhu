@@ -550,7 +550,7 @@ def instructor_pipeline(args):
         if args.input_type == "live":
             rate.sleep()
         else:
-            time_to_sleep = int(max(1/args.fps - execution_times_dict["Total inference time"][-1]*1000, 0)) # Sleep for the remaining time of the desired rate
+            time_to_sleep = max(1/args.fps - execution_times_dict["Total inference time"][-1], 0) # Sleep for the remaining time of the desired rate
             time.sleep(time_to_sleep)
 
     cv2.destroyAllWindows()
@@ -622,7 +622,7 @@ def parse_pipeline_args():
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="live",
+    parser.add_argument('--input_type', type=str, default="random",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
