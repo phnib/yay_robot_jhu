@@ -25,7 +25,7 @@ if PATH_TO_YAY_ROBOT:
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 
-from instructor.train_daVinci import build_instructor, log_confusion_matrix
+from instructor.train_daVinci import build_instructor, log_confusion_matrix, log_combined_image
 from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS
 from instructor.dataset_daVinci import get_valid_demo_start_end_indices
 from instructor.utils import center_crop_resize
@@ -143,7 +143,7 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
     # Stack the episode frame sequence and the ground truth instruction sequence
     episode_frame_sequence_tensor = torch.stack(episode_frame_sequence, dim=0) / 255.0
     if use_jaw_values_flag:
-        episode_jaw_value_sequence_tensor = torch.concatenate(episode_jaw_values_sequence, dim=0)
+        episode_jaw_value_sequence_tensor = torch.concatenate(episode_jaw_values_sequence, dim=0).to(dtype=torch.float32)
         return episode_frame_sequence_tensor, episode_jaw_value_sequence_tensor, episode_gt_instruction_sequence # Jaw values shape should be: num_frames, 2
     else:
         return episode_frame_sequence_tensor, episode_gt_instruction_sequence # Frame episode shape should be: num_frames, cam, c, h, w
@@ -212,7 +212,8 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
             return True, current_frames_transformed
     
     
-def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None, upscaling_factor=2, visualization_flag=True):
+def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None, upscaling_factor=2, 
+                             visualization_flag=True, current_jaw_values=None):
     # Visualize the current frames (with the current language instruction prediction - if also gt is given then also visualize that)
     
     # Concatenate the frames together
@@ -233,6 +234,11 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
     cv2.putText(current_frames_concatenated_bgr_upscaled, prediction_text, (text_position_x, 25), font, font_scale, prediction_text_color, thickness, cv2.LINE_AA)
     if language_instruction_ground_truth:
         cv2.putText(current_frames_concatenated_bgr_upscaled, gt_text, (text_position_x, 60), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    # Add the jaw values to right side of the image
+    if current_jaw_values is not None:
+        jaw_text = f"Jaw values: PSM2: {current_jaw_values[1]:.2f}, PSM1: {current_jaw_values[0]:.2f}"
+        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500 # TODO: Reasonable?
+        cv2.putText(current_frames_concatenated_bgr_upscaled, jaw_text, (jaw_text_position_x, 25), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     
     # Show the concatenated frames
     if visualization_flag:
@@ -266,6 +272,16 @@ def instructor_pipeline(args):
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
     print("\n-----------------------------------------------------------------------------\n")
+
+    # Define the output folder
+    timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
+    ckpt_name = os.path.basename(args.ckpt_path)
+    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"tissue_{args.tissue_id}_{timestamp=}")
+    
+    # Create the recordings folder if it does not exist
+    if not os.path.exists(output_folder_path):
+        os.makedirs(output_folder_path)
+    
     # -------------- Initialize the instructor model --------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -350,7 +366,6 @@ def instructor_pipeline(args):
     instruction_pred_list, instruction_gt_list = [], []
     
     # Evaluation timing variables
-    timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
     if args.save_video_flag:
         concat_frame_list = [] # Array to store the concatenated frames (for later saving as video)
     execution_times_dict = defaultdict(list)
@@ -361,7 +376,7 @@ def instructor_pipeline(args):
     # Init phase history list (with the phase indices up to the start phase)
     if use_phase_history_flag:
         if not args.input_type == "live" or not args.starting_phase_idx:
-            phase_history = [0]*history_len
+            phase_history = [0]*phase_history_len 
         else:
             phase_history = [0]*(phase_history_len-args.starting_phase_idx-1) + list(range(args.starting_phase_idx))
         model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
@@ -389,6 +404,8 @@ def instructor_pipeline(args):
                     # Break out of the loop if the jaw values could not be loaded (e.g., end of the episode)
                     if not success:
                         break
+            else:
+                current_jaw_values = None
 
             with measure_execution_time("Loading video frame time", execution_times_dict):
                 if args.input_type == "random":
@@ -420,11 +437,20 @@ def instructor_pipeline(args):
                 
                     # Decode the model output to the language instruction
                     predicted_instruction = instructor_model.decode_logits(logits, temperature)[0]
-                    print(f"Predicted instruction: {predicted_instruction}")
+                    print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     if args.input_type == "random":
-                        gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
+                        gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset] if frame_idx + prediction_offset < len(episode_gt_instruction_sequence) else gt_instruction # Get the gt instruction (if available) - repeat last gt instruction if end of episode (by the prediction offset)
                         instruction_gt_list.append(gt_instruction)
                         instruction_pred_list.append(predicted_instruction)
+                        
+                        # # TODO: Remove later again - debugging
+                        # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
+                        # log_combined_image(model_input_frames_tensor[0], gt_instruction, predicted_instruction, save_path=save_path)
+                        # print(f"Java values: {model_input_jaw_values_tensor}")
+                        # print(f"Phase history: {model_input_phase_history}")
+                        # exit()
+                        
+                        
             elif frame_idx == 0:
                 # Wait with predictions until the history length is reached and begin with the first instruction (which is the same for all demos)
                 predicted_instruction = candidate_texts[0]
@@ -439,7 +465,7 @@ def instructor_pipeline(args):
             
             # Update the phase history list
             if use_phase_history_flag:
-                predicted_instruction_idx = candidate_texts.index(predicted_instruction)
+                predicted_instruction_idx = candidate_texts.index(predicted_instruction) + 1 # Because of padding index
                 # If the predicted instruction is different from the last instruction, add it to the phase history
                 if predicted_instruction_idx != phase_history[-1]:
                     phase_history.append(predicted_instruction_idx)
@@ -449,14 +475,15 @@ def instructor_pipeline(args):
             
             # -------------- Visualize the frame --------------
             
-            visualization_flag = False if not args.live_visualization_flag and args.input_type == "live" else True
-            if visualization_flag or args.save_video_flag:
+            if args.visualization_flag or args.save_video_flag:
                 with measure_execution_time("Visualizing frame time", execution_times_dict):
                     # Visualization of the predicted language instruction
                     if args.input_type == "random":
-                        annotated_frame = visualize_current_frames(current_frames, predicted_instruction, gt_instruction, upscaling_factor=args.upscaling_factor, visualization_flag=visualization_flag)
+                        annotated_frame = visualize_current_frames(current_frames, predicted_instruction, gt_instruction, upscaling_factor=args.upscaling_factor,
+                                                                   visualization_flag=args.visualization_flag, current_jaw_values=current_jaw_values)
                     else:
-                        annotated_frame = visualize_current_frames(current_frames, predicted_instruction, upscaling_factor=args.upscaling_factor, visualization_flag=visualization_flag)
+                        annotated_frame = visualize_current_frames(current_frames, predicted_instruction, upscaling_factor=args.upscaling_factor,
+                                                                   visualization_flag=args.visualization_flag, current_jaw_values=current_jaw_values)
             
             if args.save_video_flag:
                 concat_frame_list.append(annotated_frame)
@@ -499,13 +526,6 @@ def instructor_pipeline(args):
     
     # Save the detected images as video (if desired)
     if args.save_video_flag:
-        # Define the output folder
-        output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, f"tissue_{args.tissue_id}_{timestamp=}")
-
-        # Create the recordings folder if it does not exist
-        if not os.path.exists(output_folder_path):
-            os.makedirs(output_folder_path)
-
         # Define the codec and create VideoWriter object
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                     
@@ -595,7 +615,7 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_14"
+    default_tissue_sample = "tissue_13"
     parser.add_argument('--tissue_id', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
     
     # Upscaling factor for the visualization
@@ -606,11 +626,11 @@ def parse_pipeline_args():
                     help="Flag to save the phase prediction recording")
     
     # Add visualization flag
-    parser.add_argument('--live_visualization_flag', action='store_true', default=True,
-                    help="Flag to visualize phase prediction during live application. Always visualized on offline data.")
+    parser.add_argument('--visualization_flag', action='store_true', default=False,
+                    help="Flag to visualize phase prediction during execution.")
     
     # Add log execution times flag
-    parser.add_argument('--log_execution_times_during_execution_flag', action='store_true', default=True,
+    parser.add_argument('--log_execution_times_during_execution_flag', action='store_true', default=False,
                     help="Flag to log the execution times of the different components")
 
     # ----------------------------------------------------------------------------------------------
