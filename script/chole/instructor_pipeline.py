@@ -166,7 +166,7 @@ def get_current_jaw_values(input_type, frame_idx=None, random_episode_jaw_value_
         if psm1_jaw is None or psm2_jaw is None:
             return False, None
         else:
-            return True, torch.tensor([psm1_jaw, psm2_jaw])
+            return True, torch.tensor([psm2_jaw, psm1_jaw])
     else:
         # Access the random generated episode jaw values
         if frame_idx >= len(random_episode_jaw_value_sequence):
@@ -205,7 +205,7 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
                     camera_frame = cv2.resize(camera_frame, downsampling_shape)
                 
                 # Convert the image to RGB
-                if camera_name in ["left_img_dir", "right_img_dir"]:
+                if camera_name not in ["left_img_dir", "right_img_dir"]: 
                     camera_frame = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
                 current_frames_transformed.append(torch.tensor(camera_frame.transpose(2, 0, 1)) / 255.0) # Shape: c, h, w
         
@@ -393,7 +393,9 @@ def instructor_pipeline(args):
         if not args.input_type == "live" or not args.starting_phase_idx:
             phase_history = [0]*phase_history_len 
         else:
-            phase_history = [0]*(phase_history_len-args.starting_phase_idx-1) + list(range(args.starting_phase_idx))
+            phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx-1)) + list(range(args.starting_phase_idx))[-phase_history_len:]
+            phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history]
+            print(f"Starting phase: {candidate_texts[args.starting_phase_idx-1]} - Phase history: {phase_history_commands}")
         model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
     else:
         model_input_phase_history = None
@@ -450,6 +452,7 @@ def instructor_pipeline(args):
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
                     logits, temperature, predicted_embedding = instructor_model(model_input_frames_tensor, model_input_jaw_values_tensor, model_input_phase_history)
+                    print(f"\nFrame Idx: Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, phase history: {model_input_phase_history}")
                     if args.input_type == "live":
                         print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     # Decode the model output to the language instruction
@@ -487,8 +490,9 @@ def instructor_pipeline(args):
         
             elif frame_idx == 0:
                 # Wait with predictions until the history length is reached and begin with the first instruction (which is the same for all demos)
-                predicted_instruction = candidate_texts[0]
-                predicted_embedding = candidate_embeddings[0]
+                starting_command_idx = 0 if not args.starting_phase_idx else args.starting_phase_idx - 1
+                predicted_instruction = candidate_texts[starting_command_idx]
+                predicted_embedding = candidate_embeddings[starting_command_idx]
                 if args.input_type == "random":
                     gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
             
@@ -622,7 +626,7 @@ def parse_pipeline_args():
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="random",
+    parser.add_argument('--input_type', type=str, default="live",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
@@ -633,7 +637,7 @@ def parse_pipeline_args():
     parser.add_argument('--camera_name_file_suffix_dict', type=dict, default=default_camera_name_file_suffix_dict, help="Dictionary with the camera names and their corresponding file suffixes")
     
     # Starting phase 
-    parser.add_argument('--starting_phase_idx', type=str, default=None, help="Starting phase index for the random generated episode (None or 0 when starting from the beginning)")
+    parser.add_argument('--starting_phase_idx', type=int, default=0, help="Starting phase index for the random generated episode (None or 0 when starting from the beginning)")
     
     # Low level policy speed ratio (as the low level policy is slower than the high level policy) - set when ll policy will be used
     parser.add_argument('--ll_policy_slowness_factor', type=int, default=1, help="Speed ratio of the low level policy compared to the high level policy")
