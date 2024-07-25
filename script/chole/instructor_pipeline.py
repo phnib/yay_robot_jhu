@@ -616,7 +616,11 @@ def parse_pipeline_args():
     
     # Add dataset directory
     default_dataset_name = "base_chole_clipping_cutting"
-    default_dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), default_dataset_name)
+    local_dataset_path = os.getenv("PATH_TO_DATASET")
+    if local_dataset_path:
+        default_dataset_dir = os.path.join(local_dataset_path, default_dataset_name)
+    else:
+        default_dataset_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chole_data", default_dataset_name)
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
