@@ -626,7 +626,7 @@ def parse_pipeline_args():
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="live",
+    parser.add_argument('--input_type', type=str, default="random",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
@@ -637,7 +637,7 @@ def parse_pipeline_args():
     parser.add_argument('--camera_name_file_suffix_dict', type=dict, default=default_camera_name_file_suffix_dict, help="Dictionary with the camera names and their corresponding file suffixes")
     
     # Starting phase 
-    parser.add_argument('--starting_phase_idx', type=int, default=0, help="Starting phase index for the random generated episode (None or 0 when starting from the beginning)")
+    parser.add_argument('--starting_phase_idx', type=int, default=None, help="Starting phase index for the random generated episode (None or 0 when starting from the beginning)")
     
     # Low level policy speed ratio (as the low level policy is slower than the high level policy) - set when ll policy will be used
     parser.add_argument('--ll_policy_slowness_factor', type=int, default=1, help="Speed ratio of the low level policy compared to the high level policy")
@@ -655,7 +655,7 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_18"
+    default_tissue_sample = "tissue_14"
     parser.add_argument('--tissue_name', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
     
     
