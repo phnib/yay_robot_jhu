@@ -159,7 +159,7 @@ def load_clip_fe(model_init_weights, device):
         # Load the SDA-CLIP model
         model_weights_path = Path(__file__).resolve().parent / "submodules" / "clip" / "models" / "soft_task.pt"
         model = load("ViT-B/16", device=device)[0]
-        sda_clip_state_dict = torch.load(model_weights_path, map_location=device)["model_state_dict"]
+        sda_clip_state_dict = torch.load(model_weights_path, map_location=device, weights_only=True)["model_state_dict"]
         model.load_state_dict(sda_clip_state_dict)
     else:
         raise ValueError(f"Model weights {model_init_weights} not supported yet!")

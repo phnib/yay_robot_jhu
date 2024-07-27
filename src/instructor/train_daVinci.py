@@ -436,7 +436,7 @@ def latest_checkpoint(ckpt_dir):
 
 if __name__ == "__main__":
     from instructor.utils import set_seed
-    from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS # get dataset parameters
+    from instructor.constants_daVinci import DATASET_CONFIGS # get dataset parameters
     
     threading.Thread(target=memory_monitor, daemon=True).start()
 

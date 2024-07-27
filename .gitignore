@@ -19,3 +19,4 @@ ckpt_dir*
 evaluation
 
 *.env
+*.deb

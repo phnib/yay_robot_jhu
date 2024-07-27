@@ -15,6 +15,27 @@ def center_crop_resize(img, size):
     img_transformed = transform(img)
     return img_transformed
 
+def randintgaussian(low, high, mean, std_dev):
+    """
+    Generate a random integer using a Gaussian distribution and clip it to the specified range.
+
+    Parameters:
+    low (int): The minimum value (inclusive).
+    high (int): The maximum value (exclusive).
+    mean (float): The mean of the Gaussian distribution.
+    std_dev (float): The standard deviation of the Gaussian distribution.
+
+    Returns:
+    int: A random integer within the specified range.
+    """
+    # Generate a random number from a Gaussian distribution
+    value = int(np.random.normal(mean, std_dev))
+
+    # Clip the value to ensure it falls within the desired range
+    value = np.clip(value, low, high - 1)
+
+    return value
+
 # TODO: For now use this function (later maybe take it directly again from act.utils.py)
 def set_seed(seed):
     np.random.seed(seed)

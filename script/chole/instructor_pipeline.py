@@ -447,7 +447,6 @@ def instructor_pipeline(args):
             # -------------- Predict (+publish) the language instruction --------------
             
             # Start with predictions after the history length is reached and predict every x frames and not at the beginning (as starting with the first phase)
-            # TODO: Maybe adjust later that it already is able to predict with less frames (after training with masking)
             if frame_idx % args.prediction_stride*args.ll_policy_slowness_factor == 0 and len(model_input_frames) == history_len+1 and frame_idx != 0:
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
