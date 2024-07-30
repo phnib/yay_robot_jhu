@@ -4,6 +4,7 @@ import json
 import sys
 from collections import defaultdict, deque
 import math
+import copy
 
 import cv2
 import numpy as np
@@ -91,6 +92,16 @@ def extract_candidate_embeddings_and_commands(command_embeddings_dict):
         
     return torch.stack(candidate_embeddings), candidate_texts
 
+def extract_phase_idx_to_instruction_mapping(command_embeddings_dict):
+    # Extract the instruction to phase index mapping
+    instruction_to_phase_idx_mapping = defaultdict(list)
+    for phase_idx, (phase_command, _) in command_embeddings_dict.items():
+        instruction_to_phase_idx_mapping[phase_command].append(phase_idx)
+    # Get the phase index to instruction mapping
+    phase_to_instruction_mapping = {str(phase_idx): instruction for instruction, phase_idx_list in instruction_to_phase_idx_mapping.items() for phase_idx in phase_idx_list}
+    
+    return phase_to_instruction_mapping
+
 def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phase_offset, after_phase_offset):
     # Load the start and end indices for the current demo as the valid range of the demo
     demo_num_frames_total = len(os.listdir(os.path.join(demo_folder_path, camera_names[0])))
@@ -106,7 +117,9 @@ def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phas
                 start = max(indices_curated_dict['start'] - before_phase_offset, start)
             if "end" in indices_curated_dict:
                 end = min(indices_curated_dict['end'] + after_phase_offset, end)
-    return start, end
+    demo_num_frames_valid = end - start + 1
+    
+    return start, end, demo_num_frames_valid
 
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
@@ -127,7 +140,9 @@ class SequenceDataset(torch.utils.data.Dataset):
         use_jaw_values_flag=False,
         phase_history_len=6,
         prediction_step_size=30,
-        recovery_probability=0.2 # TODO: Add here also unique_phases_flag -> rename
+        recovery_probability=0.2,
+        phase_history_only_phase_switches_flag=True
+        
     ):
         super().__init__()
         
@@ -151,7 +166,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.prediction_step_size = prediction_step_size
         # TODO: Integrate in dataloader, model and training
         self.recovery_probability = recovery_probability
-        self.unique_phases_flag = self... # -> rename
+        self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
         
         # Set the before_phase_offset and after_phase_offset
         dataset_name = os.path.basename(dataset_dir)
@@ -168,7 +183,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         for tissue_sample_name in tissue_sample_names:
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name)) and file_name.split('_')[0].isdigit()]
-            phases = [phase for phase in phases if "recovery" not in phase]
             phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases_ordered:
@@ -177,12 +191,8 @@ class SequenceDataset(torch.utils.data.Dataset):
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
                 # Add the length of the phase for current demo to phase_len_dict
                 for demo_sample in demo_samples:
-                    start, end = get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample), camera_names, self.before_phase_offset, self.after_phase_offset)
-                    demo_num_frames_valid = end - start + 1
+                    demo_num_frames_valid = get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample), camera_names, self.before_phase_offset, self.after_phase_offset)[2]
                     phase_len_dict[phase_sample].append(demo_num_frames_valid)
-            
-        # Compute the dataset statistics
-        self.ds_statistics_dict = self.compute_dataset_statistics(phase_len_dict)
                 
         # Generate the embeddings for all phase commands
         encoder_name = "distilbert"
@@ -190,6 +200,9 @@ class SequenceDataset(torch.utils.data.Dataset):
         unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
         self.command_embeddings_dict = generate_command_embeddings(unique_phase_folder_names, encoder_name, tokenizer, model, reduced_base_class_set_flag)
         del tokenizer, model
+        
+        # Compute the dataset statistics
+        self.ds_statistics_dict = self.compute_dataset_statistics(phase_len_dict)
         
     def __len__(self):
         # Here this means the number of randomly generated stitched episodes
@@ -206,18 +219,37 @@ class SequenceDataset(torch.utils.data.Dataset):
                 "std": np.std(phase_len_list),
                 "num_demos": len(phase_len_list),
             }
+            
+        # Compute statistics for merged phases
+        if self.reduced_base_class_set_flag:
+            # Merge the phases from the self.command_embeddings_dict
+            for phase_name, (phase_command, _) in self.command_embeddings_dict.items():
+                if "recovery" in phase_name:
+                    continue
+                if phase_command in ds_statistics_dict:
+                    ds_statistics_dict[phase_command]["min"] = ds_statistics_dict[phase_command]["min"] + ds_statistics_dict[phase_name]["min"]
+                    ds_statistics_dict[phase_command]["max"] = ds_statistics_dict[phase_command]["max"] + ds_statistics_dict[phase_name]["max"]
+                    ds_statistics_dict[phase_command]["mean"] = ds_statistics_dict[phase_command]["mean"] + ds_statistics_dict[phase_name]["mean"]
+                    ds_statistics_dict[phase_command]["std"].append(ds_statistics_dict[phase_name]["std"])
+                    ds_statistics_dict[phase_command]["num_demos"] *= ds_statistics_dict[phase_name]["num_demos"] 
+                else:
+                    ds_statistics_dict[phase_command] = ds_statistics_dict[phase_name].copy()
+                    ds_statistics_dict[phase_command]["std"] = [ds_statistics_dict[phase_name]["std"]]
+            
+            phase_commands_list = [phase_command for phase_command, _ in self.command_embeddings_dict.values()]
+            for phase_command in phase_commands_list:
+                ds_statistics_dict[phase_command]["std"] = np.sqrt(np.sum(np.square(np.array(ds_statistics_dict[phase_command]["std"])))) # Std of Gaussian distribution is sqrt of sum of squares of stds
+            
         return ds_statistics_dict
 
-    # TODO: Check if this will still work + rename "phases" ..
-    def get_command_for_ts(self, selected_phase_demo_dict, target_ts):
+    def get_embedding_command_phase_for_ts(self, selected_phase_demo_dict, target_ts):
         # Returns the command embedding and the command for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
             if phase_segment["phases_demo_start_idx"] <= target_ts <= phase_segment["phases_demo_end_idx"]:
-                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"]
+                return torch.tensor(phase_segment["embedding"]).squeeze(), phase_segment["command"], phase_segment["phase_folder_name"]
         else:
-            raise ValueError(f"Could not find command for target_ts {target_ts}.")
+            return None, None, None
 
-    # TODO: Check if this will still work + rename "phases" ..
     def get_current_phase_demo_folder_and_demo_frame_idx(self, selected_phase_demo_dict, target_ts):
         # Returns the phase and the demo frame index for the target timestep
         for phase_segment in selected_phase_demo_dict.values():
@@ -227,14 +259,38 @@ class SequenceDataset(torch.utils.data.Dataset):
         else:
             raise ValueError(f"Could not find phase and demo frame index for target_ts {target_ts}.")
 
-    # TODO: Check if this will still work + rename "phases" . (also for not phase 1,2)
+    def create_phase_demo_metadata_dict(self, selected_tissue_sample, selected_phases, selected_phase_demos):
+        # Returns a dictionary containing the selected phase demos and the start and end timestep, and further metadata   
+        selected_phase_demo_dict = {}
+        episode_num_frames = 0
+        next_phase_start_idx_counter = 0
+        for phase, selected_phase_demo in zip(selected_phases, selected_phase_demos):
+            # Add the selected phase demo to the selected_phase_demo_dict
+            selected_phase_demo_dict[phase] = {}
+            selected_phase_demo_dict[phase]["phase_folder_name"] = phase
+            selected_phase_demo_dict[phase]["demo_folder_name"] = selected_phase_demo
+            selected_phase_demo_dict[phase]["phases_demo_start_idx"] = next_phase_start_idx_counter
+            selected_phase_demo_dict[phase]["command"], selected_phase_demo_dict[phase]["embedding"] = self.command_embeddings_dict[phase]
+            
+            # Load the start and end indices for the current demo as the valid range of the demo
+            selected_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
+            start, _, demo_num_frames_valid = get_valid_demo_start_end_indices(selected_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)
+            selected_phase_demo_dict[phase]["demo_rel_start_idx"] = start
+            
+            # Count the number of valid frames for the current demo
+            episode_num_frames += demo_num_frames_valid
+            next_phase_start_idx_counter += demo_num_frames_valid
+            selected_phase_demo_dict[phase]["phases_demo_end_idx"] = next_phase_start_idx_counter - 1 # -1 because the phases_demo_end_idx is inclusive
+
+        return selected_phase_demo_dict
+
     def get_jaw_psm2_psm1_data_sequence(self, selected_tissue_sample, selected_phase_demo_dict, start_ts, curr_ts):
         # Returns the jaw data sequence for psm2 and psm1 for time steps from start_ts to curr_ts
         
         # Get a mapping which value needs to be loaded from which csv file
         ts_kinematics_file_dame_frame_idx_dict = defaultdict(list)
         for ts in range(start_ts, curr_ts + 1, self.history_step_size):
-            ts_corrected = max(0, ts) # If the episode is not long enough replicate the last frame/yaw value for the first recorded demo TODO: Check if this works
+            ts_corrected = max(0, ts) # If the episode is not long enough replicate the last frame/yaw value for the first recorded demo
             ts_phase_folder, ts_demo_folder, ts_demo_frame_idx = self.get_current_phase_demo_folder_and_demo_frame_idx(selected_phase_demo_dict, ts_corrected)
             kinematics_file_path = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, "ee_csv.csv")
             ts_kinematics_file_dame_frame_idx_dict[kinematics_file_path].append(ts_demo_frame_idx)
@@ -252,75 +308,87 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         return jaw_psm2_psm1_data_sequence 
             
-
-    # TODO: Check if this will be work also for the merged phases
     # TODO: Change to phase stacking the last predictions (based on the prediction step size) -> gives time information
-    def get_phase_history(self, selected_phase_demo_dict, curr_ts, prediction_step_size=30, unique_phases_flag=True):
+    def get_phase_history(self, selected_phase_demo_dict, sorted_phases, curr_ts):
         # Returns the phase history for the last six phases based on the last performed phases (with padding if needed)
         
         # Compute the last prediction timestep (until which the history will be considered)
-        last_pred_ts = curr_ts - prediction_step_size
+        last_pred_ts = curr_ts - self.prediction_step_size
         
-        # TODO: Get the phase history differently as selected_phase_demo_dict won't cover a full episode anymore
-        if unique_phases_flag:
-            # Get the last 6 performed phases from the current phase on
-            phase_history = deque(maxlen=self.phase_history_len)
-            for phase_segment in selected_phase_demo_dict.values():
-                if phase_segment["phases_demo_start_idx"] <= last_pred_ts:
-                    phase_history.append(phase_segment["command"])
-                    
-            # Transform into a list and use padding otherwise
-            phase_history = list(phase_history)
+        # Get the last n performed phases from the last prediction timestep on
+        if self.phase_history_only_phase_switches_flag:
+            # Get the last n performed phases from the current phase on
+            last_pred_ts_phase = self.get_embedding_command_phase_for_ts(selected_phase_demo_dict, last_pred_ts)[2]
+            last_pred_ts_phase_idx = sorted_phases.index(last_pred_ts_phase)
+            phase_history_phase_folder_names = sorted_phases[max(0, last_pred_ts_phase_idx - self.phase_history_len + 1):last_pred_ts_phase_idx+1]
+            phase_history = [self.command_embeddings_dict[phase_command][0] for phase_command in phase_history_phase_folder_names] # Transform to the commands corresponding to the phase folder names
+            # Remove replicant merged phases
+            if self.reduced_base_class_set_flag:
+                phase_history = [phase for idx, phase in enumerate(phase_history) if idx == 0 or phase != phase_history[idx-1]]
+            
+            # Add padding (if needed)
             if len(phase_history) < self.phase_history_len:
                 phase_history = ["padding"] * (self.phase_history_len - len(phase_history)) + phase_history
         else:
-            # TODO: Add here the stacking of the last predictions
-            # TODO: As this method not covers full episode, take the mean and std of the phase lengths to sample the begin and stop of the last phases 
-            pass
+            # TODO: Check if this works?
             
+            # Check first if we need to add further sample number information of precessor phases to phase demo dict (if not everything covered)
+            first_phase_partially_stitched_episode = list(selected_phase_demo_dict.keys())[0]
+            min_episode_idx = 0 # Note: Will be < 0 for the new precessor phases
+            remainin_precessor_phases_reversed = sorted_phases[:sorted_phases.index(first_phase_partially_stitched_episode)][::-1]
+            selected_phase_demo_dict_with_pre_phases = selected_phase_demo_dict.copy()
+            for precessor_phase in remainin_precessor_phases_reversed:
+                num_samples_til_pred_ts = last_pred_ts - min_episode_idx
+                if num_samples_til_pred_ts >= self.prediction_step_size*self.phase_history_len:
+                    break
+                # Sample the length of the precessor phase
+                precessor_phase_len_min = self.ds_statistics_dict[precessor_phase]["min"]
+                precessor_phase_len_max = self.ds_statistics_dict[precessor_phase]["max"]
+                precessor_phase_len_mean = self.ds_statistics_dict[precessor_phase]["mean"]
+                precessor_phase_len_std = self.ds_statistics_dict[precessor_phase]["std"]
+                precessor_phase_len = randintgaussian(precessor_phase_len_min, precessor_phase_len_max, mean=precessor_phase_len_mean, std_dev=precessor_phase_len_std) 
+                min_episode_idx -= precessor_phase_len
+                
+                # Add the precessor phase to the phase demo dict
+                selected_phase_demo_dict_with_pre_phases[precessor_phase] = {}
+                selected_phase_demo_dict_with_pre_phases[precessor_phase]["phase_folder_name"] = precessor_phase
+                selected_phase_demo_dict_with_pre_phases[precessor_phase]["phases_demo_start_idx"] = min_episode_idx
+                selected_phase_demo_dict_with_pre_phases[precessor_phase]["phases_demo_end_idx"] = min_episode_idx + precessor_phase_len - 1
+                selected_phase_demo_dict_with_pre_phases[precessor_phase]["command"], selected_phase_demo_dict_with_pre_phases[precessor_phase]["embedding"] = self.command_embeddings_dict[precessor_phase]
+            
+            # Get the last n performed phases from the current phase on
+            phase_history = []
+            pred_ts_limit = last_pred_ts - self.prediction_step_size*self.phase_history_len
+            for pred_ts in range(last_pred_ts, pred_ts_limit, -self.prediction_step_size):
+                # TODO: Check what's wrong here?
+                pred_ts_command = self.get_embedding_command_phase_for_ts(selected_phase_demo_dict_with_pre_phases, pred_ts)[1]
+                if pred_ts_command:
+                    phase_history.append(pred_ts_command)
+                else:
+                    phase_history.append("padding")
+                            
         return phase_history
-
-
-    def add_to_selected_phase_demo_dict(self, selected_phase_demo_dict, selected_tissue_sample, phase, selected_phase_demo, curr_phase_start_idx_counter):
-        # Add the selected phase demo to the selected_phase_demo_dict
-        selected_phase_demo_dict[phase] = {}
-        selected_phase_demo_dict[phase]["phase_folder_name"] = phase
-        selected_phase_demo_dict[phase]["demo_folder_name"] = selected_phase_demo
-        selected_phase_demo_dict[phase]["phases_demo_start_idx"] = curr_phase_start_idx_counter
-        selected_phase_demo_dict[phase]["command"], selected_phase_demo_dict[phase]["embedding"] = self.command_embeddings_dict[phase]
-        
-        # Load the start and end indices for the current demo as the valid range of the demo
-        selected_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
-        start, end = get_valid_demo_start_end_indices(selected_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)
-        selected_phase_demo_dict[phase]["demo_rel_start_idx"] = start
-        
-        # Count the number of valid frames for the current demo
-        demo_num_frames_valid = end - start + 1
-        episode_num_frames += demo_num_frames_valid
-        
-        next_phase_idx_counter = curr_phase_start_idx_counter + demo_num_frames_valid
-        selected_phase_demo_dict[phase]["phases_demo_end_idx"] = next_phase_idx_counter - 1 # -1 because the phases_demo_end_idx is inclusive
-        curr_phase_start_idx_counter = next_phase_idx_counter
 
 
     def __getitem__(self, index):
         # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
        
-        # TODO: Check if every substep works
-       
         # Select a random tissue sample to generate the episode from
         selected_tissue_sample = np.random.choice(list(self.tissue_phase_demo_dict.keys()))
         
-        # Go through the phases in fixed order of execution
+        # Go through the phases in fixed order of execution (ignore recovery phases here - included in next paragraph)
         phases = list(self.tissue_phase_demo_dict[selected_tissue_sample].keys())
-        sorted_phases = sorted(phases, key=lambda x: int(x.split('_')[0]))
+        phases_wo_recovery = [phase for phase in phases if "recovery" not in phase]
+        sorted_phases = sorted(phases_wo_recovery, key=lambda x: int(x.split('_')[0]))
         
         # Choose first phase as either the recovery or normal phase and the second phase as the next phase
-        phase_1 = np.random.choice(sorted_phases[:-1]) # Exclude the last phase
-        phase_1_idx = sorted_phases.index(phase_1)
+        phase_1_wo_suffix = np.random.choice(sorted_phases[:-1]) # Exclude the last phase
         recovery_phase_flag = np.random.rand() < self.recovery_probability
-        phase_1_suffix = "_recovery" if recovery_phase_flag else ""
-        phase_1 = phase_1 + phase_1_suffix
+        recovery_available_flag = phase_1_wo_suffix + "_recovery" in phases
+        phase_1_suffix = "_recovery" if recovery_phase_flag and recovery_available_flag else ""
+        phase_1 = phase_1_wo_suffix + phase_1_suffix
+        
+        phase_1_idx = sorted_phases.index(phase_1_wo_suffix)
         phase_2 = sorted_phases[phase_1_idx + 1]
         
         # Sample the demos for the first and second phase
@@ -328,49 +396,55 @@ class SequenceDataset(torch.utils.data.Dataset):
         demo_phase_2 = np.random.choice(self.tissue_phase_demo_dict[selected_tissue_sample][phase_2])
         
         # Store the selected phase demo and the start and end timestep
-        len_phase_1 = len(self.tissue_phase_demo_dict[selected_tissue_sample][phase_1][demo_phase_1])
-        len_phase_2 = len(self.tissue_phase_demo_dict[selected_tissue_sample][phase_2][demo_phase_2])
-        total_len = len_phase_1 + len_phase_2
-        precessor_phases, precessor_phase_demos = deque(), deque()
-        if total_len < self.history_len * self.history_step_size + self.prediction_offset:
-            print(f"Total length of the demos is too short: {total_len} with phase 1 ({phase_1}): {len_phase_1} and phase 2 ({phase_2}): {len_phase_2}.")
+        phase_1_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase_1, demo_phase_1)
+        len_phase_1 = get_valid_demo_start_end_indices(phase_1_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)[2]
+        total_len_wo_p2 = len_phase_1 # Just use phase 1 as possible input (or potentially precessor phases)
+        precessor_phases, precessor_phase_demos = deque(), deque() 
+        required_num_samples = self.history_len * self.history_step_size + self.prediction_offset
+        if total_len_wo_p2 < required_num_samples: # Check that the stitched partial episode is long enough (for all input data)
+            print(f"Total length of the demos is too short: {total_len_wo_p2} with phase 1 ({phase_1}): {len_phase_1}.")
             print(f"Adding precessor phases in front of phase 1 (and if not already the case, switch for phase 1 to normal instead of recovery, for clean cuts between precessor phases and phase 1).")
             phase_1 = phase_1.replace("_recovery", "")
+            demo_phase_1 = np.random.choice(self.tissue_phase_demo_dict[selected_tissue_sample][phase_1])
+            phase_1_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase_1, demo_phase_1)
+            total_len_wo_p2 = len_phase_1 = get_valid_demo_start_end_indices(phase_1_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)[2]
         
-            for phase_idx in range(phase_1_idx - 1, 0, -1):
-                if total_len >= self.history_len * self.history_step_size + self.prediction_offset:
+            for phase_idx in range(phase_1_idx - 1, -1, -1): 
+                if total_len_wo_p2 >= required_num_samples:
                     break
                 precessor_phase = sorted_phases[phase_idx]
                 precessor_phase_demo = np.random.choice(self.tissue_phase_demo_dict[selected_tissue_sample][precessor_phase])
-                precessor_phase_demo_len = len(self.tissue_phase_demo_dict[selected_tissue_sample][precessor_phase][precessor_phase_demo])
-                total_len += precessor_phase_demo_len
-                precessor_phases.appendleft((precessor_phase, precessor_phase_demo, precessor_phase_demo_len))
+                precessor_phase_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, precessor_phase, precessor_phase_demo)
+                precessor_phase_demo_len = get_valid_demo_start_end_indices(precessor_phase_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)[2]
+                total_len_wo_p2 += precessor_phase_demo_len
+                precessor_phases.appendleft(precessor_phase)
                 precessor_phase_demos.appendleft(precessor_phase_demo)
         precessor_phases, precessor_phase_demos = list(precessor_phases), list(precessor_phase_demos)
         
         # Create a dictionary to store the selected phase demos and the start and end timestep, and further metadata
-        selected_phase_demo_dict = {}
-        curr_phase_idx_counter = 0
+        
+        
         selected_phases = precessor_phases + [phase_1, phase_2]
         selected_phase_demos = precessor_phase_demos + [demo_phase_1, demo_phase_2]
-        for phase, selected_phase_demo in zip(selected_phases, selected_phase_demos):
-            self.add_to_selected_phase_demo_dict(selected_phase_demo_dict, selected_tissue_sample, phase, selected_phase_demo, curr_phase_idx_counter)
+        selected_phase_demo_dict = self.create_phase_demo_metadata_dict(selected_tissue_sample, selected_phases, selected_phase_demos)
         
+        # TODO: Check if this is a good solution for min_phase_1_phase_2_idx
         # Sample a random curr_ts and compute the start_ts and target_ts from concatinated phase 1+2 (via Gaussian distribution)
-        max_phase_1_phase_2_idx = len_phase_1 + len_phase_2 - self.prediction_offset
-        phase_1_phase_2_std = max_phase_1_phase_2_idx / 2*3 
-        curr_ts_rel = randintgaussian(0, max_phase_1_phase_2_idx - self.prediction_offset, mean=len_phase_1, std_dev=phase_1_phase_2_std)
-        curr_ts = selected_phase_demo_dict[phase_1]["phases_demo_start_idx"] + curr_ts_rel
+        if selected_phase_demo_dict[phase_1]["phases_demo_end_idx"] >= self.history_len * self.history_step_size:
+            min_phase_1_phase_2_idx = self.history_len * self.history_step_size
+        else:
+            min_phase_1_phase_2_idx = selected_phase_demo_dict[phase_1]["phases_demo_end_idx"]
+        max_phase_1_phase_2_idx = selected_phase_demo_dict[phase_2]["phases_demo_end_idx"] - self.prediction_offset
+        phase_1_phase_2_sampling_mean = selected_phase_demo_dict[phase_2]["phases_demo_start_idx"]
+        phase_1_phase_2_sampling_std = max_phase_1_phase_2_idx / (2*3)
+        curr_ts = randintgaussian(min_phase_1_phase_2_idx, max_phase_1_phase_2_idx, mean=phase_1_phase_2_sampling_mean, std_dev=phase_1_phase_2_sampling_std)
         start_ts = curr_ts - self.history_len * self.history_step_size
         target_ts = curr_ts + self.prediction_offset
         
         # -----
         
         # Retrieve the language embedding for the target_ts
-        command_embedding, command_gt = self.get_command_for_ts(
-            selected_phase_demo_dict, target_ts
-        )
-        
+        command_embedding, command_gt, _ = self.get_embedding_command_phase_for_ts(selected_phase_demo_dict, target_ts)        
         if command_embedding is None:
             raise ValueError(f"Could not find embedding for target_ts {target_ts}.")
         
@@ -382,14 +456,14 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # History information of the last six phases (with padding if needed)
         if self.use_history_flag:
-            phase_history = self.get_phase_history(selected_phase_demo_dict, curr_ts, self.prediction_step_size)
+            phase_history = self.get_phase_history(selected_phase_demo_dict, sorted_phases, curr_ts)
         else:
             phase_history = None
         
         # Construct the image sequences for the desired timesteps
         image_sequence = []
         for ts in range(start_ts, curr_ts + 1, self.history_step_size):
-            ts_corrected = max(0, ts) # If the episode is not long enough replicate the last frame/yaw value for the first recorded demo TODO: Check if this works 
+            ts_corrected = max(0, ts) # If the episode is not long enough replicate the last frame/yaw value for the first recorded demo
             image_dict = {}
             ts_phase_folder, ts_demo_folder, ts_demo_frame_idx = self.get_current_phase_demo_folder_and_demo_frame_idx(selected_phase_demo_dict, ts_corrected)
             for cam_name, cam_file_suffix in zip(self.camera_names, self.camera_file_suffixes):
@@ -665,6 +739,8 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        phase_to_instruction_mapping = extract_phase_idx_to_instruction_mapping(command_embeddings_dict)
+        ds_metadata_dict["phase_to_instruction_mapping"] = phase_to_instruction_mapping
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
         return train_dataloader, ds_metadata_dict
@@ -702,6 +778,8 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        phase_to_instruction_mapping = extract_phase_idx_to_instruction_mapping(command_embeddings_dict)
+        ds_metadata_dict["phase_to_instruction_mapping"] = phase_to_instruction_mapping
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
     
@@ -730,6 +808,8 @@ def load_merged_data(
 
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        phase_to_instruction_mapping = extract_phase_idx_to_instruction_mapping(command_embeddings_dict)
+        ds_metadata_dict["phase_to_instruction_mapping"] = phase_to_instruction_mapping
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
 
@@ -746,19 +826,20 @@ if __name__ == "__main__":
     # Parameters for the test
     dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging"
     dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) 
-    tissue_samples_ids = ["tissue_8"] # "phantom_1" "tissue_12"
+    tissue_samples_ids = ["tissue_18"] # "phantom_1" "tissue_12"
     camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
-    prediction_offset = 0 # Get command for the current timestep
-    history_step_size = 10
+    prediction_offset = 10 # Get command for the current timestep
+    history_step_size = 15
     num_episodes = 200 # Number of randlomy generated stitched episodes
-    reduced_base_class_set_flag = False
-    phase_history_len = 6
+    reduced_base_class_set_flag = True
+    phase_history_len = 100
     prediction_step_size = 30
+    recovery_probability = 0.4
+    phase_history_only_phase_switches_flag = False
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
-    # TODO: Decide for the best augmentations
     input_transforms = []
     
     # Note: Automatic augmentations
@@ -797,6 +878,8 @@ if __name__ == "__main__":
         use_jaw_values_flag=True,
         phase_history_len=phase_history_len,
         prediction_step_size=prediction_step_size,
+        recovery_probability=recovery_probability,
+        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag
     )
 
     # Sample a random item from the dataset

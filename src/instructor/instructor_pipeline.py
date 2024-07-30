@@ -27,7 +27,7 @@ else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 
 from instructor.train_daVinci import build_instructor, log_confusion_matrix, log_combined_image
-from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS
+from instructor.constants_daVinci import DATASET_CONFIGS
 from instructor.dataset_daVinci import get_valid_demo_start_end_indices
 from instructor.utils import center_crop_resize
 
@@ -86,7 +86,8 @@ def psm2_jaw_callback(data):
     
 # --------------- Utils function ---------------
 
-def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_name_file_suffix_dict, downsampling_shape, center_crop_flag, use_jaw_values_flag=True):
+def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_name_file_suffix_dict, downsampling_shape, center_crop_flag, 
+                                use_jaw_values_flag=True, phase_to_instruction_mapping=None):
     # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
        
     print("\nGenerating a random episode sequence...\n")
@@ -115,11 +116,12 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
         
         # Load the start and end indices for the current demo as the valid range of the demo
         selected_demo_folder_path = os.path.join(dataset_dir, selected_tissue_sample, phase_folder_name, selected_phase_demo_folder_name)
-        start_idx, end_idx = get_valid_demo_start_end_indices(selected_demo_folder_path, camera_names, before_phase_offset, after_phase_offset)
-        num_frames = end_idx - start_idx + 1
+        start_idx, end_idx, num_frames = get_valid_demo_start_end_indices(selected_demo_folder_path, camera_names, before_phase_offset, after_phase_offset)
         
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words) 
         _, phase_instruction = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:]) 
+        if phase_to_instruction_mapping:
+            phase_instruction = phase_to_instruction_mapping[phase_folder_name]
         episode_gt_instruction_sequence += [phase_instruction]*num_frames # Add the instruction for the current demo
         
         # Get the jaw values for the current demo
@@ -246,11 +248,11 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
     # Add the jaw values to right side of the image
     if current_jaw_values is not None:
         jaw_text = f"Jaw values: PSM2: {current_jaw_values[1]:.2f}, PSM1: {current_jaw_values[0]:.2f}"
-        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500
+        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1]//3 + 100
         cv2.putText(current_frames_concatenated_bgr_upscaled, jaw_text, (jaw_text_position_x, 25), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     if phase_history is not None:
         phase_history_text = f"Phase history: {phase_history}"
-        phase_history_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500
+        phase_history_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1]//3 + 100
         phase_history_text_position_y = 60 if current_jaw_values is not None else 25
         cv2.putText(current_frames_concatenated_bgr_upscaled, phase_history_text, (phase_history_text_position_x, phase_history_text_position_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     
@@ -289,7 +291,7 @@ def instructor_pipeline(args):
     # Define the output folder
     timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
     ckpt_name = os.path.basename(args.ckpt_path)
-    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"tissue_{args.tissue_name}_{timestamp=}")
+    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"{args.tissue_name}_{timestamp=}")
     
     # Create the recordings folder if it does not exist
     if not os.path.exists(output_folder_path):
@@ -316,9 +318,10 @@ def instructor_pipeline(args):
     use_phase_history_flag = checkpoint.use_phase_history_flag
     phase_history_len = checkpoint.phase_history_len
     use_transformer_flag = checkpoint.use_image_emb_transformer_flag
+    phase_to_instruction_mapping = checkpoint.phase_to_instruction_mapping
     instructor_model = build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, 
                                         model_camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, 
-                                        use_phase_history_flag, phase_history_len, use_transformer_flag)  
+                                        use_phase_history_flag, phase_history_len, use_transformer_flag, phase_to_instruction_mapping)  
     
     # Load the model weights
     instructor_model.load_state_dict(checkpoint.state_dict())    
@@ -367,7 +370,8 @@ def instructor_pipeline(args):
     
     if args.input_type == "random":
         # Generate a random episode
-        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, args.downsampling_shape, center_crop_flag) 
+        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
+                                                                                                                           args.downsampling_shape, center_crop_flag, use_jaw_values_flag, phase_to_instruction_mapping) 
     
         # Check if the gt instructions are within the learned instructions of the model
         gt_instructions_set = set(episode_gt_instruction_sequence)
@@ -451,7 +455,7 @@ def instructor_pipeline(args):
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
                     logits, temperature, predicted_embedding = instructor_model(model_input_frames_tensor, model_input_jaw_values_tensor, model_input_phase_history)
-                    print(f"\nFrame Idx: Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, phase history: {model_input_phase_history}")
+                    print(f"\nFrame Idx: {frame_idx} - Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, Phase history: {model_input_phase_history}")
                     if args.input_type == "live":
                         print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     # Decode the model output to the language instruction
@@ -476,9 +480,9 @@ def instructor_pipeline(args):
                         instruction_gt_list.append(gt_instruction)
                         
                         if gt_instruction == predicted_instruction:
-                            print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction}")
+                            print(f"Frame Idx: {frame_idx} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction}")
                         else:
-                            print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction} --> Wrong prediction")
+                            print(f"Frame Idx: {frame_idx} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction} --> Wrong prediction")
                         
                         # # TODO: Remove later again - debugging
                         # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
@@ -612,9 +616,9 @@ def parse_pipeline_args():
     # --------------------------- Instruction model parameters ---------------------------
     
     # Instructor model path
-    default_ckpt_folder_name = "base_chole_clipping_cutting_clip_sda_full_phase_set_one_ts_jaw_history_w_transformer_h_len_3_cosine_scheduler"
+    default_ckpt_folder_name = "base_chole_clipping_cutting_clip_reduced_set"
     default_ckpt_folder_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_ckpts", "hl", default_ckpt_folder_name)
-    default_ckpt_file_name = "best_val_loss_epoch=548"
+    default_ckpt_file_name = "best_val_loss_epoch=1066"
     parser.add_argument('--ckpt_path', type=str, default=os.path.join(default_ckpt_folder_path, f"{default_ckpt_file_name}.ckpt"),
                         help="Path to the instructor model")
 
@@ -654,7 +658,7 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_14"
+    default_tissue_sample = "tissue_8"
     parser.add_argument('--tissue_name', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
     
     

@@ -67,8 +67,8 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
             wandb.log({"Train Loss": loss.item(), "Temperature": temperature.item()})
             
         # Save images from the last batch (to see, e.g., the augmentation applied)
+        saved_img_cnt = 0
         if batch_idx == len(dataloader) - 1:
-            saved_img_cnt = 0
             for img_idx in range(len(images)):
                 if saved_img_cnt >= max_num_images:
                     break
@@ -156,23 +156,23 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
             if plot_images_flag and (incorrect_img_cnt < max_num_images or correct_img_cnt < max_num_images):
                 rnd_indices = list(torch.randperm(len(images))) # Randomly shuffle the indices - to get random images
-                for img_idx, rnd_idx in enumerate(rnd_indices):            
-                    gt, pred = command_gt[rnd_idx], decoded_texts[rnd_idx]
+                for rnd_image_idx in rnd_indices:            
+                    gt, pred = command_gt[rnd_image_idx], decoded_texts[rnd_image_idx]
                     
                     # Save incorrect prediction
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
-                        save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                        save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{rnd_image_idx}.jpg")
+                        log_combined_image(images[rnd_image_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                         if args.log_wandb:
-                            wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+                            wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {rnd_image_idx}")})
                     # Save correct prediction
                     if pred == gt and correct_img_cnt < max_num_images:
                         correct_img_cnt += 1
-                        save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                        save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{rnd_image_idx}.jpg")
+                        log_combined_image(images[rnd_image_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                         if args.log_wandb:
-                            wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+                            wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {rnd_image_idx}")})
                 
     # Visualize embeddings
     if not one_hot_flag:
@@ -365,7 +365,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, 
                      center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
-                     phase_history_len, use_transformer_flag):
+                     phase_history_len, use_transformer_flag, phase_to_instruction_mapping):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -389,6 +389,7 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         use_phase_history_flag=use_phase_history_flag,
         phase_history_len=phase_history_len,
         use_image_emb_transformer_flag=use_transformer_flag,
+        phase_to_instruction_mapping=phase_to_instruction_mapping
     ).to(device)
     return model
 
@@ -641,12 +642,17 @@ if __name__ == "__main__":
     # Build the model
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]  
+    if args.reduced_base_class_set_flag:
+        phase_to_instruction_mapping = ds_metadata_dict["phase_to_instruction_mapping"]
+    else:
+        phase_to_instruction_mapping = None
+        
     logger.info(f"\nLanguage instructions: {candidate_texts}\n")  
     model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until,
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
-                             args.use_transformer_flag)
+                             args.use_transformer_flag, phase_to_instruction_mapping)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Add cosine annealing learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)
@@ -689,7 +695,7 @@ if __name__ == "__main__":
     if args.test_only_flag:
         latest_idx = next_idx-1
         test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, args.ckpt_dir, 
-             log_wandb_flag=args.log_wandb)
+             log_wandb_flag=args.log_wandb, max_num_images=args.max_num_images)
         exit()
 
     # Training loop
@@ -700,14 +706,14 @@ if __name__ == "__main__":
         if args.log_wandb:
             wandb.log({"Epoch": epoch})
         
-        train_loss = train(model, train_dataloader, optimizer, criterion, device, args.ckpt_dir, epoch, args.max_num_images)
+        train_loss = train(model, train_dataloader, optimizer, criterion, device, args.ckpt_dir, epoch, max_num_images=args.max_num_images)
         if args.dagger_ratio is None: 
             val_loss = evaluate(model, val_dataloader, criterion, device)
             
             # Test the model and log success rate every 200 epochs
             if (epoch + 1) % args.validation_interval == 0:
                 test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, plot_images_flag=args.plot_val_images_flag, 
-                     log_wandb_flag=args.log_wandb)
+                     log_wandb_flag=args.log_wandb, max_num_images=args.max_num_images)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
         # Log the losses locally

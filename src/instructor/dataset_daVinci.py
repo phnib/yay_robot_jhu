@@ -91,6 +91,16 @@ def extract_candidate_embeddings_and_commands(command_embeddings_dict):
         
     return torch.stack(candidate_embeddings), candidate_texts
 
+def extract_phase_idx_to_instruction_mapping(command_embeddings_dict):
+    # Extract the instruction to phase index mapping
+    instruction_to_phase_idx_mapping = defaultdict(list)
+    for phase_idx, (phase_command, _) in command_embeddings_dict.items():
+        instruction_to_phase_idx_mapping[phase_command].append(phase_idx)
+    # Get the phase index to instruction mapping
+    phase_to_instruction_mapping = {str(phase_idx): instruction for instruction, phase_idx_list in instruction_to_phase_idx_mapping.items() for phase_idx in phase_idx_list}
+    
+    return phase_to_instruction_mapping
+
 def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phase_offset, after_phase_offset):
     # Load the start and end indices for the current demo as the valid range of the demo
     demo_num_frames_total = len(os.listdir(os.path.join(demo_folder_path, camera_names[0])))
@@ -106,7 +116,9 @@ def get_valid_demo_start_end_indices(demo_folder_path, camera_names, before_phas
                 start = max(indices_curated_dict['start'] - before_phase_offset, start)
             if "end" in indices_curated_dict:
                 end = min(indices_curated_dict['end'] + after_phase_offset, end)
-    return start, end
+    demo_num_frames_valid = end - start + 1
+    
+    return start, end, demo_num_frames_valid
 
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
@@ -173,8 +185,7 @@ class SequenceDataset(torch.utils.data.Dataset):
                 self.tissue_phase_demo_dict[tissue_sample_name][phase_sample] = demo_samples
                 # Add the length of the phase for current demo to phase_len_dict
                 for demo_sample in demo_samples:
-                    start, end = get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample), camera_names, self.before_phase_offset, self.after_phase_offset)
-                    demo_num_frames_valid = end - start + 1
+                    start, end, demo_num_frames_valid = get_valid_demo_start_end_indices(os.path.join(tissue_sample_dir_path, phase_sample, demo_sample), camera_names, self.before_phase_offset, self.after_phase_offset)
                     phase_len_dict[phase_sample].append(demo_num_frames_valid)
             
         # Compute the dataset statistics
@@ -288,13 +299,11 @@ class SequenceDataset(torch.utils.data.Dataset):
             
             # Load the start and end indices for the current demo as the valid range of the demo
             selected_demo_folder_path = os.path.join(self.dataset_dir, selected_tissue_sample, phase, selected_phase_demo)
-            start, end = get_valid_demo_start_end_indices(selected_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)
+            start, _, demo_num_frames_valid = get_valid_demo_start_end_indices(selected_demo_folder_path, self.camera_names, self.before_phase_offset, self.after_phase_offset)
             selected_phase_demo_dict[phase]["demo_rel_start_idx"] = start
             
             # Count the number of valid frames for the current demo
-            demo_num_frames_valid = end - start + 1
             episode_num_frames += demo_num_frames_valid
-            
             next_phase_idx_counter = curr_phase_idx_counter + demo_num_frames_valid
             selected_phase_demo_dict[phase]["full_episode_demo_end_idx"] = next_phase_idx_counter - 1 # -1 because the full_episode_demo_end_idx is inclusive
             curr_phase_idx_counter = next_phase_idx_counter
@@ -606,6 +615,8 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        phase_to_instruction_mapping = extract_phase_idx_to_instruction_mapping(command_embeddings_dict)
+        ds_metadata_dict["phase_to_instruction_mapping"] = phase_to_instruction_mapping
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
         return train_dataloader, ds_metadata_dict
@@ -643,6 +654,8 @@ def load_merged_data(
         
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        phase_to_instruction_mapping = extract_phase_idx_to_instruction_mapping(command_embeddings_dict)
+        ds_metadata_dict["phase_to_instruction_mapping"] = phase_to_instruction_mapping
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
     
@@ -671,6 +684,8 @@ def load_merged_data(
 
         # Extract the candidate embeddings and commands
         candidate_embeddings, candidate_texts = extract_candidate_embeddings_and_commands(command_embeddings_dict)
+        phase_to_instruction_mapping = extract_phase_idx_to_instruction_mapping(command_embeddings_dict)
+        ds_metadata_dict["phase_to_instruction_mapping"] = phase_to_instruction_mapping
         ds_metadata_dict["candidate_texts"] = candidate_texts
         ds_metadata_dict["candidate_embeddings"] = candidate_embeddings
 
