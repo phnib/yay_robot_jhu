@@ -750,7 +750,7 @@ class EpisodicDatasetDvrkMerged(torch.utils.data.Dataset):
                 (14, 15): "apply third clip on the right tube",
                 (16, 17): "cut the right tube"
             }
-            
+
         for tissue_sample_id in tissue_sample_ids:
             if self.phantom:
                 tissue_sample_name = f"phantom_{tissue_sample_id}"
@@ -1207,16 +1207,16 @@ class EpisodicDatasetDvrkMerged(torch.utils.data.Dataset):
 Test the EpisodicDatasetDvrkGeneric class.
 """
 # if __name__ == "__main__":
-#     seed = 42
+#     seed = 14
 #     set_seed(seed)
 #     # Parameters for the test
 #     path_to_dataset = os.getenv("PATH_TO_DATASET")
 #     # path_to_dataset = "/home/imerse/chole_ws/data"
 
 #     dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
-#     tissue_samples_ids = [1]
-#     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
-#     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
+#     tissue_samples_ids = [8]
+#     camera_names = ["left_img_dir", "endo_psm1", "endo_psm2"]
+#     camera_file_suffixes = ["_left.jpg", "_psm1.jpg", "_psm2.jpg"]
 #     num_episodes = 200 # Total number of episodes
 #     use_language_flag = True
 #     from dvrk_scripts.constants_dvrk import TASK_CONFIGS
