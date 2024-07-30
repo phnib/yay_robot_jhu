@@ -40,31 +40,26 @@ def generate_cutting_motion(csv_df, filename, repeating_num):
     # Create a list to hold new rows
     new_rows = []
     
-    jaw_angle = deepcopy(last_row["psm1_jaw"])
-    jaw_angle_sp = deepcopy(last_row["psm1_jaw_sp"])
-    if jaw_angle >= -0.3:
+    for i in range(repeating_num):
+        jaw_angle = deepcopy(last_row["psm1_jaw"])
 
-        for i in range(repeating_num):
-            jaw_angle = deepcopy(last_row["psm1_jaw"])
-    
-            if jaw_angle > 0:
-                last_row["psm1_jaw_sp"] = jaw_angle - closing_rate * i
-                # print(jaw_angle - closing_rate * i)
-            else:
-                last_row["psm1_jaw_sp"] = closing_angle
-                # print(closing_angle)
+        if jaw_angle > 0:
+            last_row["psm1_jaw"] = jaw_angle - closing_rate * i
+            # print(jaw_angle - closing_rate * i)
+        else:
+            last_row["psm1_jaw"] = closing_angle
+            # print(closing_angle)
         
-            new_rows.append(last_row.copy())
+        new_rows.append(last_row.copy())
 
-        # Convert new rows to a DataFrame
-        new_rows_df = pd.DataFrame(new_rows)
+    # Convert new rows to a DataFrame
+    new_rows_df = pd.DataFrame(new_rows)
     
-        # Concatenate the original data and new rows
-        csv_df = pd.concat([csv_df, new_rows_df], ignore_index=True)
-        csv_df.to_csv(filename, index=False)
+    # Concatenate the original data and new rows
+    csv_df = pd.concat([csv_df, new_rows_df], ignore_index=True)
+    csv_df.to_csv(filename, index=False)
 
-        # input("enter to continue...")
-
+    # input("enter to continue...")
 def generate_cutting_motion_sp(csv_df, filename, repeating_num):
     # Define the constants
     closing_angle = -0.349096
@@ -98,44 +93,56 @@ def remove_extra_row(csv_df, filename, sample_path, repeating_num):
 
 
 if __name__ == "__main__":
-    # tissue_ids = [12, 13, 14, 18]
-    # tissue_ids = [1]
+    tissue_ids = [19, 30, 32]
     # dataset_path = "/home/imerse/chole_ws/data/phantom_chole/phantom_1/ACTUAL_CUTTING_right"
-    # phase = "8_go_to_the_cutting_position_left_tube_recovery"
-    phase = "16_go_to_the_cutting_position_right_tube"
+    phases = ["8_go_to_the_cutting_position_left_tube",
+              "8_go_to_the_cutting_position_left_tube_recovery", 
+              "16_go_to_the_cutting_position_right_tube",
+              "16_go_to_the_cutting_position_right_tube_recovery"]
+    
     for tissue_id in tissue_ids:
-        dataset_path = f"/home/imerse/chole_ws/data/phantom_chole/phantom_{tissue_id}/{phase}"
-        # dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
-        samples = os.listdir(dataset_path)
-        for sample in samples:
-            sample_dir = os.path.join(dataset_path, sample)
-            if sample == "Corrections":
-                s = os.listdir(sample_dir)
-                for ss in s:
-                    sample_dir = os.path.join(sample_dir, ss)
-                    break
+        for phase in phases:
 
-            if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
-                print(f"ee state csv file not found in {sample_dir}")
-                exit
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            samples = os.listdir(dataset_path)
+            for sample in samples:
+                sample_dir = os.path.join(dataset_path, sample)
+
+                if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
+                    print(f"ee state csv file not found in {sample_dir}")
+                    exit
 
 
-            csv_path = os.path.join(sample_dir, "ee_csv.csv")
-            csv = pd.read_csv(csv_path)
+                csv_path = os.path.join(sample_dir, "ee_csv.csv")
+                csv = pd.read_csv(csv_path)
 
-            header_name_qpos_psm1 = ["psm1_pose.position.x", "psm1_pose.position.y", "psm1_pose.position.z",
-                                "psm1_pose.orientation.x", "psm1_pose.orientation.y", "psm1_pose.orientation.z", "psm1_pose.orientation.w",
-                                "psm1_jaw"]
-            header_name_actions_psm1 = ["psm1_sp.position.x", "psm1_sp.position.y", "psm1_sp.position.z",
-                            "psm1_sp.orientation.x", "psm1_sp.orientation.y", "psm1_sp.orientation.z", "psm1_sp.orientation.w",
-                            "psm1_jaw_sp"]
-            episode_len = len(csv)
-            # print("episode_len: ", episode_len)
-            qpos_psm1 = csv[header_name_qpos_psm1].iloc[:, 0:episode_len].to_numpy()
-            # print(qpos_psm1.shape)
-            # visualize_robot_trajectory(qpos_psm1)
-            generate_cutting_motion_sp(csv, csv_path, 10)
-            # remove_extra_row(csv, csv_path, sample_dir, 10)
-        print(f"Done for tissue {tissue_id}")
+
+                # generate_cutting_motion(csv, csv_path, 10)
+                remove_extra_row(csv, csv_path, sample_dir, 10)
+
+            print(f"Done generating cutting for tissue {tissue_id}")
+
+
+    # for tissue_id in tissue_ids:
+    #     for phase in phases:
+
+    #         dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+    #         samples = os.listdir(dataset_path)
+    #         for sample in samples:
+    #             sample_dir = os.path.join(dataset_path, sample)
+
+    #             if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
+    #                 print(f"ee state csv file not found in {sample_dir}")
+    #                 exit
+
+
+    #             csv_path = os.path.join(sample_dir, "ee_csv.csv")
+    #             csv = pd.read_csv(csv_path)
+
+
+    #             generate_cutting_motion_sp(csv, csv_path, 10)
+    #             # remove_extra_row(csv, csv_path, sample_dir, 10)
+
+    #         print(f"Done generating sp for tissue {tissue_id}")
 
     print("job finished")
