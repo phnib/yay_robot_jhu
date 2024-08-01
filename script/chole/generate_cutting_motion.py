@@ -33,7 +33,9 @@ def generate_cutting_motion(csv_df, filename, repeating_num):
     # Define the constants
     closing_angle = -0.349096
     closing_rate = 0.5
-    
+    if csv_df.empty:
+        print("The DataFrame is empty. Please check the CSV file.")
+        return
     # Get the last row
     last_row = csv_df.iloc[-1].to_dict()
     
@@ -64,7 +66,9 @@ def generate_cutting_motion_sp(csv_df, filename, repeating_num):
     # Define the constants
     closing_angle = -0.349096
     closing_rate = 0.5
-
+    if csv_df.empty:
+        print("The DataFrame is empty. Please check the CSV file.", filename)
+        return
     # Update the last 10 rows of 'psm1_jaw_sp'
     for i in range(2, repeating_num+1):
         csv_df.loc[csv_df.index[-i], 'psm1_jaw_sp'] = max(csv_df.loc[csv_df.index[-i+1], 'psm1_jaw'] - 0.1, closing_angle)
@@ -93,7 +97,7 @@ def remove_extra_row(csv_df, filename, sample_path, repeating_num):
 
 
 if __name__ == "__main__":
-    tissue_ids = [19, 30, 32]
+    tissue_ids = [40]
     # dataset_path = "/home/imerse/chole_ws/data/phantom_chole/phantom_1/ACTUAL_CUTTING_right"
     phases = ["8_go_to_the_cutting_position_left_tube",
               "8_go_to_the_cutting_position_left_tube_recovery", 
@@ -112,37 +116,51 @@ if __name__ == "__main__":
                     print(f"ee state csv file not found in {sample_dir}")
                     exit
 
+                csv_path = os.path.join(sample_dir, "ee_csv.csv")
+                csv = pd.read_csv(csv_path)
+
+                generate_cutting_motion(csv, csv_path, 10)
+                # remove_extra_row(csv, csv_path, sample_dir, 10)
+
+            print(f"Done generating cutting for tissue {tissue_id}")
+
+    for tissue_id in tissue_ids:
+        for phase in phases:
+
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            samples = os.listdir(dataset_path)
+            for sample in samples:
+                sample_dir = os.path.join(dataset_path, sample)
+
+                if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
+                    print(f"ee state csv file not found in {sample_dir}")
+                    exit
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
 
-
-                # generate_cutting_motion(csv, csv_path, 10)
                 remove_extra_row(csv, csv_path, sample_dir, 10)
 
-            print(f"Done generating cutting for tissue {tissue_id}")
+            print(f"Done removing extra rows for tissue {tissue_id}")
 
+    
+    for tissue_id in tissue_ids:
+        for phase in phases:
 
-    # for tissue_id in tissue_ids:
-    #     for phase in phases:
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            samples = os.listdir(dataset_path)
+            for sample in samples:
+                sample_dir = os.path.join(dataset_path, sample)
 
-    #         dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
-    #         samples = os.listdir(dataset_path)
-    #         for sample in samples:
-    #             sample_dir = os.path.join(dataset_path, sample)
+                if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
+                    print(f"ee state csv file not found in {sample_dir}")
+                    exit
 
-    #             if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
-    #                 print(f"ee state csv file not found in {sample_dir}")
-    #                 exit
+                csv_path = os.path.join(sample_dir, "ee_csv.csv")
+                csv = pd.read_csv(csv_path)
 
+                generate_cutting_motion_sp(csv, csv_path, 10)
 
-    #             csv_path = os.path.join(sample_dir, "ee_csv.csv")
-    #             csv = pd.read_csv(csv_path)
-
-
-    #             generate_cutting_motion_sp(csv, csv_path, 10)
-    #             # remove_extra_row(csv, csv_path, sample_dir, 10)
-
-    #         print(f"Done generating sp for tissue {tissue_id}")
+            print(f"Done generating sp for tissue {tissue_id}")
 
     print("job finished")
