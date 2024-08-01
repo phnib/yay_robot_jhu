@@ -309,8 +309,8 @@ def load_data_dvrk(
     # elif action_mode == 'hybrid':
     #     train_dataset = EpisodicDatasetDvrkHybrid(train_indices, dataset_path, camera_names, norm_stats, task_config)
     #     val_dataset = EpisodicDatasetDvrkHybrid(val_indices, dataset_path, camera_names, norm_stats, task_config)
-    print("\n-------------loading training data-------------\n")
     if merging_subtasks:
+        print("\n-------------loading merged training data-------------\n")
         train_datasets = EpisodicDatasetDvrkMerged(
             train_indices,
             tissue_samples_ids,
@@ -320,7 +320,7 @@ def load_data_dvrk(
             task_config,
             use_language=use_language,
         )
-        print("\n-------------loading validation data-------------\n")
+        print("\n-------------loading merged validation data-------------\n")
         
         val_datasets = EpisodicDatasetDvrkMerged(
                 val_indices,
@@ -332,6 +332,8 @@ def load_data_dvrk(
                 use_language=use_language,
             )
     else:
+        print("\n-------------loading training data-------------\n")
+
         train_datasets = EpisodicDatasetDvrkGeneric(
                 train_indices,
                 tissue_samples_ids,
