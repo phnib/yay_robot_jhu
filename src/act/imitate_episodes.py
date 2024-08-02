@@ -258,12 +258,12 @@ def main(args):
         policy_config = {
             "lr": args["lr"],
             "camera_names": camera_names,
-            "action_dim": 14,
+            "action_dim": 20,
             "observation_horizon": 1,
             "action_horizon": 8,  # TODO not used
             "prediction_horizon": args["chunk_size"],
             "num_queries": args["chunk_size"],
-            "num_inference_timesteps": 10,
+            "num_inference_timesteps": 80,
             "ema_power": 0.75,
             "vq": False,
             "backbone": args["image_encoder"],
