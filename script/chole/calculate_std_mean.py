@@ -125,8 +125,10 @@ def compute_diffs(ids, data_dir, chunk_size=100, phantoms=False):
     diffs_np = np.concatenate(diffs, axis=0)
     mean = diffs_np.mean(axis=0)
     std = diffs_np.std(axis=0).clip(1e-2, 10)
+    min = diffs_np.min(axis = 0)
+    max = diffs_np.max(axis = 0)
 
-    return mean, std
+    return mean, std, min, max
 
 # Define the main function to generate the task configuration file
 def generate_task_config():
@@ -138,13 +140,25 @@ def generate_task_config():
         ids = [4, 5, 6, 8, 12, 13, 14, 18, 19, 22, 23, 30, 32, 35, 39, 40]
         data_dir = "/home/imerse/chole_ws/data/base_chole_clipping_cutting/"
     
-    mean, std = compute_diffs(ids, data_dir)
+    mean, std, min, max = compute_diffs(ids, data_dir)
 
     std_str = ', '.join(map(str, std))
     mean_str = ', '.join(map(str, mean))
+    min_str = ', '.join(map(str, min))
+    max_str = ', '.join(map(str, max))
 
     print("mean:", mean_str)
     print("std:", std_str)
+    print("min:", min_str)
+    print("max:", max_str)
+
+    # write the results into a txt file
+    with open("./std_mean.txt", "w") as f:
+        f.write(f"tissue ids: {ids}\n")
+        f.write(f"mean: {mean_str}\n")
+        f.write(f"std: {std_str}\n")
+        f.write(f"min: {min_str}\n")
+        f.write(f"max: {max_str}\n")
 
 
 # Run the main function to generate the task configuration
