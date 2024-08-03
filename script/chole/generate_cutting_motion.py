@@ -97,7 +97,7 @@ def remove_extra_row(csv_df, filename, sample_path, repeating_num):
 
 
 if __name__ == "__main__":
-    tissue_ids = [40]
+    tissue_ids = [4, 5, 6, 8, 12, 13, 14, 18, 19, 22, 23, 30, 32, 35, 39, 40]
     # dataset_path = "/home/imerse/chole_ws/data/phantom_chole/phantom_1/ACTUAL_CUTTING_right"
     phases = ["8_go_to_the_cutting_position_left_tube",
               "8_go_to_the_cutting_position_left_tube_recovery", 
@@ -107,14 +107,19 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         for phase in phases:
 
-            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            dataset_path = f"/cis/home/sschmi46/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
+
+
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
 
                 if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
                     print(f"ee state csv file not found in {sample_dir}")
-                    exit
+                    continue
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
@@ -127,14 +132,17 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         for phase in phases:
 
-            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            dataset_path = f"/cis/home/sschmi46/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
 
                 if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
                     print(f"ee state csv file not found in {sample_dir}")
-                    exit
+                    continue
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
@@ -147,14 +155,17 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         for phase in phases:
 
-            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            dataset_path = f"/cis/home/sschmi46/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
 
                 if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
                     print(f"ee state csv file not found in {sample_dir}")
-                    exit
+                    continue
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
