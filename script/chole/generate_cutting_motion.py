@@ -108,13 +108,16 @@ if __name__ == "__main__":
         for phase in phases:
 
             dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
 
                 if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
                     print(f"ee state csv file not found in {sample_dir}")
-                    exit
+                    continue
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
@@ -128,13 +131,16 @@ if __name__ == "__main__":
         for phase in phases:
 
             dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
 
                 if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
                     print(f"ee state csv file not found in {sample_dir}")
-                    exit
+                    continue
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
@@ -148,13 +154,16 @@ if __name__ == "__main__":
         for phase in phases:
 
             dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
 
                 if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
                     print(f"ee state csv file not found in {sample_dir}")
-                    exit
+                    continue
 
                 csv_path = os.path.join(sample_dir, "ee_csv.csv")
                 csv = pd.read_csv(csv_path)
