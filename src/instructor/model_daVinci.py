@@ -42,6 +42,7 @@ class Instructor(nn.Module):
         phase_emb_dim=4,
         history_output_dim=256,
         use_image_emb_transformer_flag=False,
+        phase_to_instruction_mapping=None
     ):
         super().__init__()
 
@@ -144,6 +145,7 @@ class Instructor(nn.Module):
         if use_image_emb_transformer_flag:
             self.num_heads = num_heads
             self.num_layers = num_layers
+        self.phase_to_instruction_mapping = phase_to_instruction_mapping
 
         total, trainable = count_parameters(self)
         print(f"Total parameters: {total / 1e6:.2f}M")
