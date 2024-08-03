@@ -19,6 +19,7 @@ from albumentations.pytorch import ToTensorV2
 import seaborn as sns
 from tqdm import tqdm
 import json
+import time
 
 # path_to_yay_robot = "/home/jchen396/scr4_akriege1/chole/yay_robot_jhu"
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
@@ -193,7 +194,7 @@ class RandomCrop(object):
 class DataAug(object):
     """Convert ndarrays in sample to Tensors."""
 
-    def __init__(self, img_hw, mask_prob=0.5):
+    def __init__(self, img_hw, mask_prob=0.07):
         self.ratio = 0.95
         self.img_hw = img_hw # heigt width
         self.mask_prob = mask_prob  # Probability to mask an image
@@ -205,20 +206,20 @@ class DataAug(object):
         self.composed = transforms.Compose([self.random_crop, 
                                             self.resize, 
                                             self.random_rot])
-        self.color_jitter = transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08)
+        self.color_jitter = transforms.ColorJitter(brightness=0.2, contrast=0.4, saturation=0.5, hue=0.08)
 
         ## albumentations (pixel dropout, blur, brightness, contrast, gaussian blur)
-        min_height = max(1, img_hw[0] // 32)
-        min_width = max(1, img_hw[1] // 32)
-        max_height = min(img_hw[0] // 8, img_hw[0])
-        max_width = min(img_hw[1] // 8, img_hw[1])
+        min_height = max(1, img_hw[0] // 40)
+        min_width = max(1, img_hw[1] // 40)
+        max_height = min(img_hw[0] // 30, img_hw[0])
+        max_width = min(img_hw[1] // 30, img_hw[1])
         # print("min_height:", min_height, "min_width:", min_width, "max_height:", max_height, "max_width:", max_width)
         self.albumentations_transforms = A.Compose([
-            A.CoarseDropout(max_holes=8, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
-            A.OneOf([
-                A.Blur(blur_limit=3, p=0.5),
-                A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-            ], p=1.0)
+            A.CoarseDropout(max_holes=128, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
+            # A.OneOf([
+            #     A.Blur(blur_limit=3, p=0.2),
+            #     # A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+            # ], p=0.2)
             # ToTensorV2()
         ])
 
@@ -306,7 +307,7 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.recovery_ratio = task_config['recovery_ratio']
         self.is_sim = None
         self.cutting_action_pad_size = task_config['cutting_action_pad_size']
-        self.img_height, self.img_width = [240, 320]
+        self.img_height, self.img_width = [360, 480]
         self.num_samples = task_config['num_episodes']
 
         # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
@@ -1206,54 +1207,57 @@ class EpisodicDatasetDvrkMerged(torch.utils.data.Dataset):
 """
 Test the EpisodicDatasetDvrkGeneric class.
 """
-# if __name__ == "__main__":
-#     seed = 14
-#     set_seed(seed)
-#     # Parameters for the test
-#     path_to_dataset = os.getenv("PATH_TO_DATASET")
-#     # path_to_dataset = "/home/imerse/chole_ws/data"
+if __name__ == "__main__":
+    seed = random.randint(0, 1000)
+    set_seed(seed)
+    for i in range(10):
+        # seed = random.randint(0, 1000)
+        # set_seed(seed)
+        # Parameters for the test
+        path_to_dataset = os.getenv("PATH_TO_DATASET")
+        # path_to_dataset = "/home/imerse/chole_ws/data"
 
-#     dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
-#     tissue_samples_ids = [8]
-#     camera_names = ["left_img_dir", "endo_psm1", "endo_psm2"]
-#     camera_file_suffixes = ["_left.jpg", "_psm1.jpg", "_psm2.jpg"]
-#     num_episodes = 200 # Total number of episodes
-#     use_language_flag = True
-#     from dvrk_scripts.constants_dvrk import TASK_CONFIGS
-#     task_config = TASK_CONFIGS['base_chole_clipping_cutting']
-#     episode_ids = [i for i in range(num_episodes)]
-#     dataset = EpisodicDatasetDvrkGeneric(
-#                 episode_ids,
-#                 tissue_samples_ids,
-#                 dataset_dir,
-#                 camera_names,
-#                 camera_file_suffixes,
-#                 # num_episodes,
-#                 task_config,
-#                 use_language=use_language_flag
-#                 )
+        dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
+        tissue_samples_ids = [8]
+        camera_names = ["left_img_dir", "endo_psm1", "endo_psm2"]
+        camera_file_suffixes = ["_left.jpg", "_psm1.jpg", "_psm2.jpg"]
+        num_episodes = 200 # Total number of episodes
+        use_language_flag = True
+        from dvrk_scripts.constants_dvrk import TASK_CONFIGS
+        task_config = TASK_CONFIGS['base_chole_clipping_cutting']
+        episode_ids = [i for i in range(num_episodes)]
+        dataset = EpisodicDatasetDvrkGeneric(
+                    episode_ids,
+                    tissue_samples_ids,
+                    dataset_dir,
+                    camera_names,
+                    camera_file_suffixes,
+                    # num_episodes,
+                    task_config,
+                    use_language=use_language_flag
+                    )
 
-#     # Sample a random item from the dataset
-#     rdm_idx = np.random.randint(0, len(dataset))
-#     print("idx:", rdm_idx)
-#     if use_language_flag:
-#         image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
-#         print(f"Image sequence shape: {image_data.shape}")
-#         # print(f"Command: {command}")
-#     else:
-#         image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
+        # Sample a random item from the dataset
+        rdm_idx = np.random.randint(0, len(dataset))
+        print("idx:", rdm_idx)
+        if use_language_flag:
+            image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
+            print(f"Image sequence shape: {image_data.shape}")
+            # print(f"Command: {command}")
+        else:
+            image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
 
 
-#         # Create a figure with subplots: one row per timestamp, one column per camera
-#     fig, axes = plt.subplots(1, len(camera_names), figsize=(15, 10))
-#     for cam_idx, cam_name in enumerate(camera_names):
-#         img = image_data[cam_idx]  # Assuming image_data is a numpy array or compatible type
+            # Create a figure with subplots: one row per timestamp, one column per camera
+        fig, axes = plt.subplots(1, len(camera_names), figsize=(15, 10))
+        for cam_idx, cam_name in enumerate(camera_names):
+            img = image_data[cam_idx]  # Assuming image_data is a numpy array or compatible type
 
-#         # Check and possibly transpose the shape if needed
-#         if img.shape[0] == 3 and len(img.shape) == 3:
-#             img = np.transpose(img, (1, 2, 0))  # Transpose to (height, width, channels)
+            # Check and possibly transpose the shape if needed
+            if img.shape[0] == 3 and len(img.shape) == 3:
+                img = np.transpose(img, (1, 2, 0))  # Transpose to (height, width, channels)
 
-#         axes[cam_idx].imshow(img)
-#         axes[cam_idx].set_title(f"{cam_name}")
-#         axes[cam_idx].axis('off')  # Optionally turn off the axis
-#     plt.show()
+            axes[cam_idx].imshow(img)
+            axes[cam_idx].set_title(f"{cam_name}")
+            axes[cam_idx].axis('off')  # Optionally turn off the axis
+        plt.show()
