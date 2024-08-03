@@ -92,7 +92,7 @@ class DiffusionPolicy(nn.Module):
         self.feature_dimension = 64
         self.ac_dim = args_override["action_dim"]
         self.obs_dim = (
-            self.feature_dimension * len(self.camera_names) + 14
+            self.feature_dimension * len(self.camera_names) + self.ac_dim
         )  # camera features and proprio
         if use_language:
             self.obs_dim += self.feature_dimension
@@ -138,7 +138,7 @@ class DiffusionPolicy(nn.Module):
         self.pools = nn.ModuleList(pools)
         self.linears = nn.ModuleList(linears)
 
-        self.backbones = replace_bn_with_gn(self.backbones)  # TODO
+        self.backbones = replace_bn_with_gn(self.backbones, 2)  # TODO
 
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.ac_dim,
@@ -197,6 +197,10 @@ class DiffusionPolicy(nn.Module):
             all_features = []
             for cam_id in range(len(self.camera_names)):
                 cam_image = image[:, cam_id]
+                # if using DataParallel, need to access the underlying module
+                if isinstance(nets, nn.DataParallel):
+                    nets = nets.module
+
                 cam_features = nets["policy"]["backbones"][cam_id](
                     cam_image, command_embedding
                 )
