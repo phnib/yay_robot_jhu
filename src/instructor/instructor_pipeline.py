@@ -318,10 +318,11 @@ def instructor_pipeline(args):
     use_phase_history_flag = checkpoint.use_phase_history_flag
     phase_history_len = checkpoint.phase_history_len
     use_transformer_flag = checkpoint.use_image_emb_transformer_flag
-    phase_to_instruction_mapping = checkpoint.phase_to_instruction_mapping
+    phase_to_instruction_mapping = checkpoint.phase_to_instruction_mapping if hasattr(checkpoint, "phase_to_instruction_mapping") else None
+    phase_history_only_phase_switches_flag = checkpoint.phase_history_only_phase_switches_flag
     instructor_model = build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, 
                                         model_camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, 
-                                        use_phase_history_flag, phase_history_len, use_transformer_flag, phase_to_instruction_mapping)  
+                                        use_phase_history_flag, phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag)  
     
     # Load the model weights
     instructor_model.load_state_dict(checkpoint.state_dict())    
@@ -616,9 +617,9 @@ def parse_pipeline_args():
     # --------------------------- Instruction model parameters ---------------------------
     
     # Instructor model path
-    default_ckpt_folder_name = "base_chole_clipping_cutting_clip_reduced_set"
+    default_ckpt_folder_name = "base_chole_clipping_cutting_clip_sda_full_phase_set_one_ts_jaw_history_w_transformer_h_len_3_cosine_scheduler"
     default_ckpt_folder_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_ckpts", "hl", default_ckpt_folder_name)
-    default_ckpt_file_name = "best_val_loss_epoch=1066"
+    default_ckpt_file_name = "best_val_loss_epoch=548"
     parser.add_argument('--ckpt_path', type=str, default=os.path.join(default_ckpt_folder_path, f"{default_ckpt_file_name}.ckpt"),
                         help="Path to the instructor model")
 

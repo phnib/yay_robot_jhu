@@ -42,7 +42,8 @@ class Instructor(nn.Module):
         phase_emb_dim=4,
         history_output_dim=256,
         use_image_emb_transformer_flag=False,
-        phase_to_instruction_mapping=None
+        phase_to_instruction_mapping=None,
+        phase_history_only_phase_switches_flag=False
     ):
         super().__init__()
 
@@ -146,6 +147,7 @@ class Instructor(nn.Module):
             self.num_heads = num_heads
             self.num_layers = num_layers
         self.phase_to_instruction_mapping = phase_to_instruction_mapping
+        self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
 
         total, trainable = count_parameters(self)
         print(f"Total parameters: {total / 1e6:.2f}M")
@@ -339,6 +341,7 @@ if __name__ == "__main__":
     set_seed(seed)    
 
     # Parameters for the test
+    gpu = 0
     datasets_dir = os.getenv("PATH_TO_DATASET")
     tissue_samples_ids = [1]
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
@@ -350,25 +353,35 @@ if __name__ == "__main__":
     use_phase_history_flag = True
     phase_history_len = 6
     use_jaw_values_flag = True
-    use_transformer_flag = False # TODO: Tryout both
+    use_transformer_flag = False 
     center_crop_flag = True
     reduced_base_class_set_flag = False
     one_hot_flag = True
     backbone_model_name = "clip"
     model_init_weights = "sda"
     prediction_step_size = 30
+    recovery_probability = 0.4
+    phase_history_only_phase_switches_flag = False
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     input_transforms = []
-    input_transforms.append(transforms.RandomRotation(30))
-    input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    input_transforms.append(v2.RandomPerspective(p=0.5))
-    input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
-    input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
-    input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    input_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
-    input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
-    input_transforms.append(transforms.RandomGrayscale(p=0.2))
+    
+    # Note: Automatic augmentations
+    input_transforms.append(transforms.RandAugment())
+    # input_transforms.append(transforms.TrivialAugmentWide())
+    # input_transforms.append(transforms.AugMix())
+    
+    # Note: Manual augmetnations
+    # input_transforms.append(transforms.RandomRotation(15))
+    # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
+    # input_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    
+    # input_transforms.append(v2.RandomPerspective(p=0.5))
+    # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
+    # input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
+    # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
+    # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
+    # input_transforms.append(transforms.RandomGrayscale(p=0.2))
     input_transforms = transforms.Compose(input_transforms)
 
     # Dataset and Dataloader parameters
@@ -397,13 +410,16 @@ if __name__ == "__main__":
         reduced_base_class_set_flag=reduced_base_class_set_flag,
         phase_history_len=phase_history_len,
         center_crop_flag=center_crop_flag,
-        prediction_step_size=prediction_step_size
+        prediction_step_size=prediction_step_size,
+        recovery_probability=recovery_probability,
+        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
     )    
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]
     
     # Load the model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{gpu}" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
     candidate_embeddings = candidate_embeddings.to(device)
     command_to_index = {command: i for i, command in enumerate(candidate_texts)}
     model = Instructor(
@@ -444,8 +460,8 @@ if __name__ == "__main__":
             print(f"Predictions shape: {predictions_logits.shape}")
             print(f"Ground truth command ({prediction_offset=}): {gt_command[idx_in_batch]}")
             print(f"Predicted command [untrained] ({prediction_offset=}): {pred_command[idx_in_batch]}\n")
-            print(f"Phase history: {phase_history}")
-            print(f"Jaw values: {jaw_values}")
+            print(f"Phase history (idx=0): {[phase[0] for phase in phase_history]}")
+            print(f"Jaw values (idx=0): {jaw_values[0]}")
             
             break
 

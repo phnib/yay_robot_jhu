@@ -365,7 +365,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, 
                      center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
-                     phase_history_len, use_transformer_flag, phase_to_instruction_mapping):
+                     phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -389,7 +389,8 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         use_phase_history_flag=use_phase_history_flag,
         phase_history_len=phase_history_len,
         use_image_emb_transformer_flag=use_transformer_flag,
-        phase_to_instruction_mapping=phase_to_instruction_mapping
+        phase_to_instruction_mapping=phase_to_instruction_mapping,
+        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag
     ).to(device)
     return model
 
@@ -480,6 +481,8 @@ if __name__ == "__main__":
     parser.add_argument('--phase_history_len', action='store', type=int, help='phases_history_len', default=6)
     parser.add_argument('--use_transformer_flag', action='store_true', help='Use a transformer model instead of a linear layer')
     parser.add_argument('--prediction_step_size', action='store', type=int, help='prediction_step_size (in number of frames)', default=30)
+    parser.add_argument('--recovery_probability', action='store', type=float, help='recovery_probability', default=0.2)
+    parser.add_argument('--phase_history_only_phase_switches_flag', action='store_true', help='Use only the phase switches in the history')    
     # TODO: Decide later here on the augmentation mode used
     
     args = parser.parse_args()
@@ -559,7 +562,9 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
-            prediction_step_size=args.prediction_step_size
+            prediction_step_size=args.prediction_step_size,
+            recovery_probability=args.recovery_probability,
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -580,9 +585,12 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
-            prediction_step_size=args.prediction_step_size
+            prediction_step_size=args.prediction_step_size,
+            recovery_probability=args.recovery_probability,
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
         )
     else:
+        # TODO: Move this after loading the ckpt and take the metadata from the checkpoint for init the dataloader - also regarding which gallbladders to eval on
         test_dataloader, ds_metadata_dict = load_merged_data(
             dataset_dirs=dataset_dirs,
             num_episodes_list=num_episodes_list,
@@ -601,7 +609,9 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
-            prediction_step_size=args.prediction_step_size
+            prediction_step_size=args.prediction_step_size,
+            recovery_probability=args.recovery_probability,
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -652,7 +662,7 @@ if __name__ == "__main__":
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until,
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
-                             args.use_transformer_flag, phase_to_instruction_mapping)
+                             args.use_transformer_flag, phase_to_instruction_mapping, args.phase_history_only_phase_switches_flag)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Add cosine annealing learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)

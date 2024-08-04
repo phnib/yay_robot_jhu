@@ -215,11 +215,19 @@ class DataAug(object):
         max_width = min(img_hw[1] // 30, img_hw[1])
         # print("min_height:", min_height, "min_width:", min_width, "max_height:", max_height, "max_width:", max_width)
         self.albumentations_transforms = A.Compose([
+<<<<<<< HEAD
+            A.CoarseDropout(max_holes=128, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
+            # A.OneOf([
+            #     A.Blur(blur_limit=3, p=0.2),
+            #     # A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+            # ], p=0.2)
+=======
             A.CoarseDropout(max_holes=10, max_height=max_height, max_width=max_width, min_holes=3, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
             A.OneOf([
                 # A.Blur(blur_limit=3, p=0.5),
                 A.GaussianBlur(blur_limit=(3, 7), p=0.5),
             ], p=1.0)
+>>>>>>> c562e23 (merge from marin workstation)
             # ToTensorV2()
         ])
 
@@ -692,6 +700,37 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
 """
 Test the EpisodicDatasetDvrkGeneric class.
 """
+<<<<<<< HEAD
+if __name__ == "__main__":
+    seed = random.randint(0, 1000)
+    set_seed(seed)
+    for i in range(10):
+        # seed = random.randint(0, 1000)
+        # set_seed(seed)
+        # Parameters for the test
+        path_to_dataset = os.getenv("PATH_TO_DATASET")
+        # path_to_dataset = "/home/imerse/chole_ws/data"
+
+        dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
+        tissue_samples_ids = [8]
+        camera_names = ["left_img_dir", "endo_psm1", "endo_psm2"]
+        camera_file_suffixes = ["_left.jpg", "_psm1.jpg", "_psm2.jpg"]
+        num_episodes = 200 # Total number of episodes
+        use_language_flag = True
+        from dvrk_scripts.constants_dvrk import TASK_CONFIGS
+        task_config = TASK_CONFIGS['base_chole_clipping_cutting']
+        episode_ids = [i for i in range(num_episodes)]
+        dataset = EpisodicDatasetDvrkGeneric(
+                    episode_ids,
+                    tissue_samples_ids,
+                    dataset_dir,
+                    camera_names,
+                    camera_file_suffixes,
+                    # num_episodes,
+                    task_config,
+                    use_language=use_language_flag
+                    )
+=======
 # if __name__ == "__main__":
 #     seed = 42
 #     set_seed(seed)
@@ -718,16 +757,17 @@ Test the EpisodicDatasetDvrkGeneric class.
 #                 task_config,
 #                 use_language=use_language_flag
 #                 )
+>>>>>>> c562e23 (merge from marin workstation)
 
-#     # Sample a random item from the dataset
-#     rdm_idx = np.random.randint(0, len(dataset))
-#     print("idx:", rdm_idx)
-#     if use_language_flag:
-#         image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
-#         print(f"Image sequence shape: {image_data.shape}")
-#         # print(f"Command: {command}")
-#     else:
-#         image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
+        # Sample a random item from the dataset
+        rdm_idx = np.random.randint(0, len(dataset))
+        print("idx:", rdm_idx)
+        if use_language_flag:
+            image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
+            print(f"Image sequence shape: {image_data.shape}")
+            # print(f"Command: {command}")
+        else:
+            image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
 
 
             # Create a figure with subplots: one row per timestamp, one column per camera

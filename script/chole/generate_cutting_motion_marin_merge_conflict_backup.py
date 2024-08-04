@@ -107,7 +107,15 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         # dataset_path = f"/home/imerse/chole_ws/data/phantom_chole/phantom_{tissue_id}/{phase}"
         for phase in phases:
+<<<<<<< HEAD
+
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
+=======
             dataset_path = f"/mnt/nvme1/chole/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+>>>>>>> c562e23 (merge from marin workstation)
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
@@ -137,6 +145,54 @@ if __name__ == "__main__":
                 # print(qpos_psm1.shape)
                 # visualize_robot_trajectory(qpos_psm1)
                 generate_cutting_motion(csv, csv_path, 10)
+<<<<<<< HEAD
+                # remove_extra_row(csv, csv_path, sample_dir, 10)
+
+            print(f"Done generating cutting for tissue {tissue_id}")
+
+    for tissue_id in tissue_ids:
+        for phase in phases:
+
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
+            samples = os.listdir(dataset_path)
+            for sample in samples:
+                sample_dir = os.path.join(dataset_path, sample)
+
+                if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
+                    print(f"ee state csv file not found in {sample_dir}")
+                    continue
+
+                csv_path = os.path.join(sample_dir, "ee_csv.csv")
+                csv = pd.read_csv(csv_path)
+
+                remove_extra_row(csv, csv_path, sample_dir, 10)
+
+            print(f"Done removing extra rows for tissue {tissue_id}")
+
+    
+    for tissue_id in tissue_ids:
+        for phase in phases:
+
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            if not os.path.exists(dataset_path):
+                print(f"dataset path not found in {dataset_path}")
+                continue
+            samples = os.listdir(dataset_path)
+            for sample in samples:
+                sample_dir = os.path.join(dataset_path, sample)
+
+                if not os.path.exists(os.path.join(sample_dir, "ee_csv.csv")):
+                    print(f"ee state csv file not found in {sample_dir}")
+                    continue
+
+                csv_path = os.path.join(sample_dir, "ee_csv.csv")
+                csv = pd.read_csv(csv_path)
+
+=======
+>>>>>>> c562e23 (merge from marin workstation)
                 generate_cutting_motion_sp(csv, csv_path, 10)
                 remove_extra_row(csv, csv_path, sample_dir, 10)
         print(f"Done for tissue {tissue_id}")
