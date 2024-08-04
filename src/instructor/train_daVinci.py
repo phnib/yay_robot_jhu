@@ -123,6 +123,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     all_commands_gt = []
     all_decoded_texts = []
+    all_commands_last_pred = [] # To evaluate the phase transitions accuracy
 
     if not one_hot_flag:
         all_predicted_embeddings = []
@@ -143,13 +144,14 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
             # Forward pass
             logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
-
             decoded_texts = model.decode_logits(logits, temperature) 
 
             # Store the ground truth and predicted commands for the confusion matrix
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
-
+            if phase_history: # Store the last predicted command for the phase transitions
+                all_commands_last_pred.extend(phase_history[-1])
+            
             if not one_hot_flag:
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
                 all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
@@ -194,16 +196,35 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     logger.info("")
     # Compute the success rate -> accurarcy
     accurarcy_curr_epoch = accuracy_score(all_commands_gt, all_decoded_texts)
-    if args.log_wandb:
+    if args.log_wandb: # TODO: Get the flag from the parameters
         wandb.log({f"Accurarcy": accurarcy_curr_epoch})
         
     # Compute the (macro) F1 score
     f1_score_curr_epoch = f1_score(all_commands_gt, all_decoded_texts, average='macro')
     if args.log_wandb:
         wandb.log({f"F1 Score": f1_score_curr_epoch})
-    
+        
     logger.info(f"Epoch {current_epoch}: Accuracy = {accurarcy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+        
+    # TODO: Check if this works
+    # Compute metric specificall for the phase transitions
+    if phase_history:
+        # Compute the success rate for the phase transitions (so only where gt != last pred)
+        transition_filter = [gt != pred for gt, pred in zip(all_commands_gt, all_commands_last_pred)]
+        all_commands_gt_filtered = [gt for gt, filter_val in zip(all_commands_gt, transition_filter) if filter_val]
+        all_decoded_texts_filtered = [pred for pred, filter_val in zip(all_decoded_texts, transition_filter) if filter_val]
+        
+        # Compute the success rate -> accurarcy
+        accurarcy_curr_epoch_transitions = accuracy_score(all_commands_gt_filtered, all_decoded_texts_filtered)
+        if args.log_wandb:
+            wandb.log({f"Accurarcy (at transitions)": accurarcy_curr_epoch_transitions})
+        
+        # Compute the (macro) F1 score
+        f1_score_curr_epoch_transitions = f1_score(all_commands_gt_filtered, all_decoded_texts_filtered, average='macro')
+        if args.log_wandb:
+            wandb.log({f"F1 Score (at transitions)": f1_score_curr_epoch_transitions})
 
+        logger.info(f"Epoch {current_epoch}: Accuracy (at transitions) = {accurarcy_curr_epoch_transitions * 100:.2f}% - F1 Score (at transitions) = {f1_score_curr_epoch_transitions * 100:.2f}%")
 
 # ----------------------------
 

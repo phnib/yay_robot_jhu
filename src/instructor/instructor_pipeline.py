@@ -222,6 +222,16 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
             current_frames_transformed = random_episode_frame_sequence[frame_idx]  # Shape: cam, c, h, w
             return True, current_frames_transformed
     
+
+def apply_logits_lp_filter(last_n_logits, filter_mode="average"):
+    # Apply a low pass filter on the logits (e.g., average, ema (exponential moving average), ...)
+    
+    # TODO: Add exponential averaging (giving the most recent samples highest priority)
+    if filter_mode == "average":
+        return np.mean(last_n_logits, axis=0) # TODO: Applied on correct axis?
+    else:
+        raise ValueError(f"Filter mode {filter_mode} is not implemented yet")
+
     
 def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None, upscaling_factor=2, 
                              visualization_flag=True, current_jaw_values=None, phase_history=None):
@@ -397,7 +407,10 @@ def instructor_pipeline(args):
     if use_phase_history_flag:
         if not args.input_type == "live" or not args.starting_phase_idx:
             phase_history = [0]*phase_history_len 
+        # TODO: How to init for the new approach? Already set the phase history len based on the prediction step size?!
         else:
+            # TODO: Add here the new version of the phase history - might move the initial prediction here instead of below
+            # TODO: Check how to init the phase history len here for the new approach?! Take the mean of the phase history len?
             phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx-1)) + list(range(args.starting_phase_idx))[-phase_history_len:]
             phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history]
             print(f"Starting phase: {candidate_texts[args.starting_phase_idx-1]} - Phase history: {phase_history_commands}")
@@ -412,7 +425,11 @@ def instructor_pipeline(args):
     else:
         model_input_jaw_values_tensor = None
     
+    # Init output buffer
+    logits_buffer = deque(maxlen=args.lp_filter_n_samples)
+    
     frame_idx = 0
+    new_pred_flag = False
     while not exit_flag:
         with measure_execution_time("Total inference time", execution_times_dict):
             # -------------- Load current jaw values + camera frames --------------
@@ -459,9 +476,17 @@ def instructor_pipeline(args):
                     print(f"\nFrame Idx: {frame_idx} - Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, Phase history: {model_input_phase_history}")
                     if args.input_type == "live":
                         print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
+                    # Apply the low pass filter on the logits (if desired)
+                    if args.lp_filter_n_samples > 1:
+                        logits_buffer.append(logits)
+                        stacked_logits = torch.stack(list(logits_buffer))
+                        smoothed_logits = apply_logits_lp_filter(stacked_logits, filter_mode=args.lp_filter_mode) # TODO: Check if this works
+                    else:
+                        smoothed_logits = logits
                     # Decode the model output to the language instruction
-                    predicted_instruction = instructor_model.decode_logits(logits, temperature)[0]
+                    predicted_instruction = instructor_model.decode_logits(smoothed_logits, temperature)[0]
                     instruction_pred_list.append(predicted_instruction)
+                    new_pred_flag = True
                     
                     # Publish the predicted language instruction
                     if args.input_type == "live": 
@@ -497,6 +522,7 @@ def instructor_pipeline(args):
                 starting_command_idx = 0 if not args.starting_phase_idx else args.starting_phase_idx - 1
                 predicted_instruction = candidate_texts[starting_command_idx]
                 predicted_embedding = candidate_embeddings[starting_command_idx]
+                new_pred_flag = True # Indicate that a new prediction was made (for the initial prediction) # TODO: Remove here?
                 if args.input_type == "random":
                     gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
             
@@ -506,7 +532,7 @@ def instructor_pipeline(args):
                     instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))      
             
             # Update the phase history list
-            if use_phase_history_flag:
+            if use_phase_history_flag and new_pred_flag:
                 predicted_instruction_idx = candidate_texts.index(predicted_instruction) + 1 # Because of padding index
                 # If the predicted instruction is different from the last instruction, add it to the phase history
                 if predicted_instruction_idx != phase_history[-1]:
@@ -514,6 +540,7 @@ def instructor_pipeline(args):
                     # Keep the phase history list at the desired length
                     phase_history = phase_history[1:]
                     model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
+                new_pred_flag = False # Reset the new prediction flag
             
             # -------------- Visualize the frame --------------
             
@@ -626,6 +653,11 @@ def parse_pipeline_args():
     # Prediction stride value to only predict every x frames
     parser.add_argument('--prediction_stride', type=int, default=30, help="Prediction stride value (e.g., predict every x frames)")
 
+    # Output low pass buffer size # TODO: check if this works correctly
+    parser.add_argument('--low_pass_buffer_size', type=int, default=3, help="Low pass buffer size for the logits")
+
+    # Output low pass filter mode
+    parser.add_argument('--lp_filter_mode', type=str, default="average", help="Low pass filter mode for the logits (e.g., average, ema)")
 
     # ---------------------------------- Data parameters -------------------------------------
     
