@@ -46,8 +46,9 @@ def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, m
         }
         phase_idx_to_instruction_mapping = {str(phase_idx): instruction for instruction, phase_idx_list in instruction_to_phase_idx_mapping.items() for phase_idx in phase_idx_list}
     for phase_folder_name in unique_phase_folder_names_sorted:
-        # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words)
-        phase_idx, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
+        # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words) - No extra command for recovery phases
+        phase_idx, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.replace("_recovery", "").split("_")[1:])
+
         if reduced_base_class_set_flag:
             # Reduce base instruction set (keep finetuining instructions)
             if phase_idx in phase_idx_to_instruction_mapping:
@@ -165,7 +166,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.use_jaw_values_flag = use_jaw_values_flag
         self.phase_history_len = phase_history_len
         self.prediction_step_size = prediction_step_size
-        # TODO: Integrate in dataloader, model and training
         self.recovery_probability = recovery_probability
         self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
         self.verbose = verbose
@@ -454,14 +454,13 @@ class SequenceDataset(torch.utils.data.Dataset):
         if self.use_jaw_values_flag:
             # Read out the jaw values from start to end (when a certain flag is set)
             jaw_psm2_psm1_data_sequence = self.get_jaw_psm2_psm1_data_sequence(selected_tissue_sample, selected_phase_demo_dict, start_ts, curr_ts)
-        else:
-            jaw_psm2_psm1_data_sequence = None
         
         # History information of the last six phases (with padding if needed)
         if self.use_history_flag:
             phase_history = self.get_phase_history(selected_phase_demo_dict, sorted_phases, curr_ts)
         else:
-            phase_history = None
+            self.phase_history_len = 1 # Required for eval of phase transitions
+            phase_history = self.get_phase_history(selected_phase_demo_dict, sorted_phases, curr_ts)
         
         # Construct the image sequences for the desired timesteps
         image_sequence = []
@@ -495,8 +494,11 @@ class SequenceDataset(torch.utils.data.Dataset):
             image_sequence = image_sequence.reshape(-1, len(self.camera_names), image_sequence.size(1), image_sequence.size(2), image_sequence.size(3)) # Reshape back to (ts, cam, c, h, w)
         image_sequence = image_sequence / 255.0 
 
-        return image_sequence, command_embedding, command_gt, jaw_psm2_psm1_data_sequence, phase_history 
-
+        if self.use_jaw_values_flag:
+            return image_sequence, command_embedding, command_gt, jaw_psm2_psm1_data_sequence, phase_history 
+        else:
+            return image_sequence, command_embedding, command_gt, phase_history 
+    
 
 def load_merged_data(
     dataset_dirs,

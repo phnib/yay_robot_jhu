@@ -155,7 +155,8 @@ class Instructor(nn.Module):
 
     def forward(self, images, psm2_psm1_jaw_values=None, phase_history=None):
         
-        assert len(phase_history[0]) == self.phase_history_len, f"Phase history should have length {self.phase_history_len}"
+        if self.use_phase_history_flag:
+            assert len(phase_history[0]) == self.phase_history_len, f"Phase history should have length {self.phase_history_len}"
         
         # Given images of shape (b, t, k, c, h, w)
         batch_size, timesteps, num_cameras, c, h, w = images.shape

@@ -1,7 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag --balanced_class_weights_flag
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/new_dataloader_proto_training_yay     --batch_size 16     --num_epochs 1000     --lr 4e-4 --weight_decay 0.05    --history_step_size 30    --prediction_offset 12     --history_len 1     --seed 4   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 2 --cameras_to_use endo_psm2 left_img_dir endo_psm1 --backbone_model clip --model_init_weights sda --freeze_backbone_until all --balanced_class_weights_flag --use_transformer_flag --gpu 0 --recovery_probability 0.2
 """
 
 import os
@@ -42,17 +42,30 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
     total_loss = 0.0
     for batch_idx, batch in enumerate(dataloader):
         # Get the data from the batch
-        images, _, commands, psm2_psm1_jaw_values, phase_history = batch # If not used then jaw values and phase history is None
+        if args.use_jaw_values_flag:
+            images, _, commands, psm2_psm1_jaw_values, phase_history = batch 
+        else:
+            images, _, commands, phase_history = batch
+            psm2_psm1_jaw_values = None
+    
+        # Prepare model input
         images = images.to(device)
-        if psm2_psm1_jaw_values is not None:
+        if args.use_jaw_values_flag:
             psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
-        if phase_history is not None:
+        if args.use_phase_history_flag:
             phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
             phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
 
         # Forward pass
         optimizer.zero_grad()
-        logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+        if args.use_jaw_values_flag and args.use_phase_history_flag:
+            logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+        elif args.use_jaw_values_flag:
+            logits, temperature, _ = model(images, psm2_psm1_jaw_values)
+        elif args.use_phase_history_flag:
+            logits, temperature, _ = model(images, phase_history_indexed)
+        else:
+            logits, temperature, _ = model(images)
 
         # Convert ground truth command strings to indices using the pre-computed dictionary
         commands_idx = torch.tensor([model.command_to_index[cmd] for cmd in commands], device=device)
@@ -93,16 +106,29 @@ def evaluate(model, dataloader, criterion, device):
     with torch.no_grad():
         for batch in dataloader: 
             # Get the data from the batch
-            images, _, commands, psm2_psm1_jaw_values, phase_history = batch # If not used then jaw values and phase history is None
+            if args.use_jaw_values_flag:
+                images, _, commands, psm2_psm1_jaw_values, phase_history = batch 
+            else:
+                images, _, commands, phase_history = batch
+        
+            # Prepare model input
             images = images.to(device)
-            if psm2_psm1_jaw_values is not None:
+            if args.use_jaw_values_flag:
                 psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
-            if phase_history is not None:
+            if args.use_phase_history_flag:
                 phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
                 phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
-                
+
             # Forward pass
-            logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            optimizer.zero_grad()
+            if args.use_jaw_values_flag and args.use_phase_history_flag:
+                logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            elif args.use_jaw_values_flag:
+                logits, temperature, _ = model(images, psm2_psm1_jaw_values)
+            elif args.use_phase_history_flag:
+                logits, temperature, _ = model(images, phase_history_indexed)
+            else:
+                logits, temperature, _ = model(images)
 
             # Convert ground truth command strings to indices using the pre-computed dictionary
             commands_idx = torch.tensor([model.command_to_index[cmd] for cmd in commands], device=device)
@@ -134,23 +160,37 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             # Get the data from the batch
-            images, command_embedding_gt, command_gt, psm2_psm1_jaw_values, phase_history = batch
+            if args.use_jaw_values_flag:
+                images, command_embedding_gt, command_gt, psm2_psm1_jaw_values, phase_history = batch 
+            else:
+                images, command_embedding_gt, command_gt, phase_history = batch
+                psm2_psm1_jaw_values = None
+        
+            # Prepare model input
             images = images.to(device)
-            if psm2_psm1_jaw_values is not None:
+            if args.use_jaw_values_flag:
                 psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
-            if phase_history is not None:
+            if args.use_phase_history_flag:
                 phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
                 phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
 
-            # Forward pass
-            logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            # Forward pass + decode logits
+            optimizer.zero_grad()
+            if args.use_jaw_values_flag and args.use_phase_history_flag:
+                logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            elif args.use_jaw_values_flag:
+                logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values)
+            elif args.use_phase_history_flag:
+                logits, temperature, predicted_embedding = model(images, phase_history_indexed)
+            else:
+                logits, temperature, _ = model(images)
             decoded_texts = model.decode_logits(logits, temperature) 
 
             # Store the ground truth and predicted commands for the confusion matrix
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
-            if phase_history: # Store the last predicted command for the phase transitions
-                all_commands_last_pred.extend(phase_history[-1])
+            # Store the last predicted command for the phase transitions
+            all_commands_last_pred.extend(phase_history[-1])
             
             if not one_hot_flag:
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
@@ -194,39 +234,42 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     
     # Compute metrics 
     logger.info("")
-    # Compute the success rate -> accurarcy
-    accurarcy_curr_epoch = accuracy_score(all_commands_gt, all_decoded_texts)
-    if args.log_wandb: # TODO: Get the flag from the parameters
-        wandb.log({f"Accurarcy": accurarcy_curr_epoch})
+    compute_metrics(current_epoch, all_commands_gt, all_decoded_texts, all_commands_last_pred, args, logger)
+    
+# ----------------------------
+
+def compute_metrics(current_epoch, all_commands_gt, all_decoded_texts, all_commands_last_pred, args, logger):
+    # Compute the success rate -> accuracy
+    accuracy_curr_epoch = accuracy_score(all_commands_gt, all_decoded_texts)
+    if args.log_wandb:
+        wandb.log({"Accuracy": accuracy_curr_epoch})
         
     # Compute the (macro) F1 score
     f1_score_curr_epoch = f1_score(all_commands_gt, all_decoded_texts, average='macro')
     if args.log_wandb:
-        wandb.log({f"F1 Score": f1_score_curr_epoch})
+        wandb.log({"F1 Score": f1_score_curr_epoch})
         
-    logger.info(f"Epoch {current_epoch}: Accuracy = {accurarcy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+    logger.info(f"Epoch {current_epoch}: Accuracy = {accuracy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
         
-    # TODO: Check if this works
-    # Compute metric specificall for the phase transitions
-    if phase_history:
-        # Compute the success rate for the phase transitions (so only where gt != last pred)
-        transition_filter = [gt != pred for gt, pred in zip(all_commands_gt, all_commands_last_pred)]
-        all_commands_gt_filtered = [gt for gt, filter_val in zip(all_commands_gt, transition_filter) if filter_val]
-        all_decoded_texts_filtered = [pred for pred, filter_val in zip(all_decoded_texts, transition_filter) if filter_val]
-        
-        # Compute the success rate -> accurarcy
-        accurarcy_curr_epoch_transitions = accuracy_score(all_commands_gt_filtered, all_decoded_texts_filtered)
-        if args.log_wandb:
-            wandb.log({f"Accurarcy (at transitions)": accurarcy_curr_epoch_transitions})
-        
-        # Compute the (macro) F1 score
-        f1_score_curr_epoch_transitions = f1_score(all_commands_gt_filtered, all_decoded_texts_filtered, average='macro')
-        if args.log_wandb:
-            wandb.log({f"F1 Score (at transitions)": f1_score_curr_epoch_transitions})
+    # ---------- Metrics at phase transitions (so only where gt != last pred) ----------
+    
+    # Keep only the transition inputs
+    transition_filter = [gt != pred for gt, pred in zip(all_commands_gt, all_commands_last_pred)]
+    all_commands_gt_filtered = [gt for gt, filter_val in zip(all_commands_gt, transition_filter) if filter_val]
+    all_decoded_texts_filtered = [pred for pred, filter_val in zip(all_decoded_texts, transition_filter) if filter_val]
+    
+    # Compute the success rate -> accuracy
+    accuracy_curr_epoch_transitions = accuracy_score(all_commands_gt_filtered, all_decoded_texts_filtered)
+    if args.log_wandb:
+        wandb.log({"Accuracy (at transitions)": accuracy_curr_epoch_transitions})
+    
+    # Compute the (macro) F1 score
+    f1_score_curr_epoch_transitions = f1_score(all_commands_gt_filtered, all_decoded_texts_filtered, average='macro')
+    if args.log_wandb:
+        wandb.log({"F1 Score (at transitions)": f1_score_curr_epoch_transitions})
 
-        logger.info(f"Epoch {current_epoch}: Accuracy (at transitions) = {accurarcy_curr_epoch_transitions * 100:.2f}% - F1 Score (at transitions) = {f1_score_curr_epoch_transitions * 100:.2f}%")
+    logger.info(f"Epoch {current_epoch}: Accuracy (at transitions) = {accuracy_curr_epoch_transitions * 100:.2f}% - F1 Score (at transitions) = {f1_score_curr_epoch_transitions * 100:.2f}%")
 
-# ----------------------------
 
 def log_combined_image(images, gt_text, pred_text, psm2_psm1_jaw_values=None, camera_names=None, save_path=None):
 
