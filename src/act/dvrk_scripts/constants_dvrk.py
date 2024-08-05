@@ -47,7 +47,7 @@ TASK_CONFIGS = {
                                         
                         
         'norm_scheme': 'std',
-        'save_frequency': 150,
+        'save_frequency': 250,
         'camera_names': ['left', 'left_wrist', 'right_wrist'],
     },
     'base_chole_clipping_cutting':{
@@ -84,20 +84,19 @@ TASK_CONFIGS = {
                                         0.04358239, 0.15126492]) }],
                         
         'norm_scheme': 'std',
-        'save_frequency': 150,
+        'save_frequency': 100,
         'camera_names': ['left', 'left_wrist', 'right_wrist'],
-
     },
     'exvivo_11':{
         'dataset_dir': DATA_DIR + "/base_chole_clipping_cutting/",
         'phantom': False,
-        'num_episodes': 6392,
+        'num_episodes': 5890,
         'tissue_samples_ids': [4, 5, 6, 8, 12, 13, 14, 18, 19, 22],
         'camera_file_suffixes':  ["_left.jpg", "_psm1.jpg", "_psm2.jpg"],
         'episode_len': 400, # not to be confused with number of demos
         'cutting_action_pad_size': 10,
-        "recovery_ratio": 1.0,
-        'action_mode': ['hybrid',
+        "recovery_ratio": 0.2,
+        'action_mode': ['hybrid', 
                         {'max_': np.array([4.23075504e-04, 9.21509775e-04, 6.13676510e-04, 1.00000000e+00,
                                             4.95288465e-03, 2.07531063e-03, 3.96580366e-03, 1.00000000e+00,
                                             1.72866365e-02, 6.03863632e-01, 2.51159512e-03, 2.53343572e-02,
@@ -120,7 +119,7 @@ TASK_CONFIGS = {
                                          0.07149193, 0.04634726, 0.19887901, 0.47374915, 0.01,       0.01,
                                          0.01,       0.01,       0.03242789, 0.03051706, 0.03738663, 0.01292145,
                                          0.04263112, 0.14474135,]) }],
-
+                        
         'norm_scheme': 'std',
         'save_frequency': 100,
         'camera_names': ['left', 'left_wrist', 'right_wrist'],

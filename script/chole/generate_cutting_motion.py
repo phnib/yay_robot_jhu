@@ -97,7 +97,7 @@ def remove_extra_row(csv_df, filename, sample_path, repeating_num):
 
 
 if __name__ == "__main__":
-    tissue_ids = [41, 47, 49]
+    tissue_ids = [40]
     # dataset_path = "/home/imerse/chole_ws/data/phantom_chole/phantom_1/ACTUAL_CUTTING_right"
     phases = ["8_go_to_the_cutting_position_left_tube",
               "8_go_to_the_cutting_position_left_tube_recovery", 
