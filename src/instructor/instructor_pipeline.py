@@ -223,12 +223,31 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
             return True, current_frames_transformed
     
 
-def apply_logits_lp_filter(last_n_logits, filter_mode="average"):
+def apply_logits_lp_filter(last_n_logits, filter_mode="average", smoothing_factor=2):
     # Apply a low pass filter on the logits (e.g., average, ema (exponential moving average), ...)
     
-    # TODO: Add exponential averaging (giving the most recent samples highest priority)
     if filter_mode == "average":
-        return np.mean(last_n_logits, axis=0) # TODO: Applied on correct axis?
+        smoothed_logits = torch.mean(last_n_logits, dim=0).unsqueeze(0)
+        return smoothed_logits
+    elif filter_mode == "ema":
+        # Determine the smoothing period based on the length of last_n_logits
+        smoothing_period = len(last_n_logits)
+        
+        # Calculate alpha based on the smoothing period and smoothing factor
+        alpha = smoothing_factor / (1 + smoothing_period)
+        
+        # Initialize EMA with the first logit value
+        ema = last_n_logits[0]
+        
+        # Calculate EMA using the adjusted formula
+        for t in range(1, smoothing_period):
+            ema = (
+                last_n_logits[t] * alpha +
+                ema * (1 - alpha)
+            )
+        
+        smoothed_logits = ema.unsqueeze(0)
+        return smoothed_logits
     else:
         raise ValueError(f"Filter mode {filter_mode} is not implemented yet")
 
@@ -309,7 +328,7 @@ def instructor_pipeline(args):
     
     # -------------- Initialize the instructor model --------------
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
     # Init instructor model + load parameters and weigths from checkpoint
     checkpoint = torch.load(args.ckpt_path)
@@ -328,8 +347,9 @@ def instructor_pipeline(args):
     use_phase_history_flag = checkpoint.use_phase_history_flag
     phase_history_len = checkpoint.phase_history_len
     use_transformer_flag = checkpoint.use_image_emb_transformer_flag
+    # TODO: Do this also for the other checkpoint parameters (for backward compatibility)
     phase_to_instruction_mapping = checkpoint.phase_to_instruction_mapping if hasattr(checkpoint, "phase_to_instruction_mapping") else None
-    phase_history_only_phase_switches_flag = checkpoint.phase_history_only_phase_switches_flag
+    phase_history_only_phase_switches_flag = checkpoint.phase_history_only_phase_switches_flag if hasattr(checkpoint, "phase_history_only_phase_switches_flag") else False
     instructor_model = build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, 
                                         model_camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, 
                                         use_phase_history_flag, phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag)  
@@ -426,7 +446,7 @@ def instructor_pipeline(args):
         model_input_jaw_values_tensor = None
     
     # Init output buffer
-    logits_buffer = deque(maxlen=args.lp_filter_n_samples)
+    logits_buffer = deque(maxlen=args.low_pass_buffer_size)
     
     frame_idx = 0
     new_pred_flag = False
@@ -477,10 +497,10 @@ def instructor_pipeline(args):
                     if args.input_type == "live":
                         print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
                     # Apply the low pass filter on the logits (if desired)
-                    if args.lp_filter_n_samples > 1:
+                    if args.low_pass_buffer_size > 1:
                         logits_buffer.append(logits)
-                        stacked_logits = torch.stack(list(logits_buffer))
-                        smoothed_logits = apply_logits_lp_filter(stacked_logits, filter_mode=args.lp_filter_mode) # TODO: Check if this works
+                        stacked_logits = torch.stack(list(logits_buffer)).squeeze(1)
+                        smoothed_logits = apply_logits_lp_filter(stacked_logits, filter_mode=args.lp_filter_mode, smoothing_factor=args.lp_ema_smoothing_factor) 
                     else:
                         smoothed_logits = logits
                     # Decode the model output to the language instruction
@@ -653,11 +673,18 @@ def parse_pipeline_args():
     # Prediction stride value to only predict every x frames
     parser.add_argument('--prediction_stride', type=int, default=30, help="Prediction stride value (e.g., predict every x frames)")
 
-    # Output low pass buffer size # TODO: check if this works correctly
+    # TODO: Play around with which LP parameter work best
+    # Output low pass buffer size 
     parser.add_argument('--low_pass_buffer_size', type=int, default=3, help="Low pass buffer size for the logits")
 
     # Output low pass filter mode
-    parser.add_argument('--lp_filter_mode', type=str, default="average", help="Low pass filter mode for the logits (e.g., average, ema)")
+    parser.add_argument('--lp_filter_mode', type=str, default="ema", help="Low pass filter mode for the logits (e.g., average, ema)")
+
+    # Output low pass filter alpha value (for ema)
+    parser.add_argument('--lp_ema_smoothing_factor', type=float, default=2, help="Low pass filter smoothing factor for the logits (only for ema -> exponential moving average)")
+
+    # GPU to run inference on
+    parser.add_argument('--gpu', type=int, default=0, help="GPU id to use")
 
     # ---------------------------------- Data parameters -------------------------------------
     
@@ -691,7 +718,7 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_8"
+    default_tissue_sample = "tissue_13"
     parser.add_argument('--tissue_name', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
     
     
