@@ -320,8 +320,11 @@ def instructor_pipeline(args):
     # Define the output folder
     timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
     ckpt_name = os.path.basename(args.ckpt_path)
-    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"{args.tissue_name}_{timestamp=}")
-    
+    if args.input_type == "random":
+        output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"{args.tissue_name}_{timestamp=}")
+    else:
+        output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, timestamp)
+        
     # Create the recordings folder if it does not exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -431,8 +434,8 @@ def instructor_pipeline(args):
         else:
             # TODO: Add here the new version of the phase history - might move the initial prediction here instead of below
             # TODO: Check how to init the phase history len here for the new approach?! Take the mean of the phase history len?
-            phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx-1)) + list(range(args.starting_phase_idx))[-phase_history_len:]
-            phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history]
+            phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx)) + list(range(args.starting_phase_idx))[-phase_history_len:]
+            phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history if phase_idx != 0]
             print(f"Starting phase: {candidate_texts[args.starting_phase_idx-1]} - Phase history: {phase_history_commands}")
         model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
     else:
@@ -689,11 +692,11 @@ def parse_pipeline_args():
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="random",
+    parser.add_argument('--input_type', type=str, default="live",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
-    parser.add_argument('--downsampling_shape', type=tuple, default=(224, 224), help="Desired size of the input image")
+    parser.add_argument('--downsampling_shape', type=tuple, default=(224, 224), help="Desired size of the input image") # TODO: Get this from the model checkpoint (add into model checkpoint)
     
     # Camera name file suffix dict
     default_camera_name_file_suffix_dict = {"endo_psm2": "_psm2.jpg", "left_img_dir": "_left.jpg", "right_img_dir": "_right.jpg", "endo_psm1": "_psm1.jpg"}
