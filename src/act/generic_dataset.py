@@ -215,11 +215,11 @@ class DataAug(object):
         max_width = min(img_hw[1] // 30, img_hw[1])
         # print("min_height:", min_height, "min_width:", min_width, "max_height:", max_height, "max_width:", max_width)
         self.albumentations_transforms = A.Compose([
-            A.CoarseDropout(max_holes=10, max_height=max_height, max_width=max_width, min_holes=3, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
-            A.OneOf([
-                # A.Blur(blur_limit=3, p=0.5),
-                A.GaussianBlur(blur_limit=(3, 7), p=0.5),
-            ], p=1.0)
+            A.CoarseDropout(max_holes=128, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, min_width=min_width, fill_value=0, p=0.5),
+            # A.OneOf([
+            #     A.Blur(blur_limit=3, p=0.2),
+            #     # A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+            # ], p=0.2)
             # ToTensorV2()
         ])
 
@@ -687,47 +687,565 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
             return image_data, qpos_data, action_data, is_pad, command_embedding
         else:
             return image_data, qpos_data, action_data, is_pad
+        
 
+
+class EpisodicDatasetDvrkMerged(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        episode_ids,
+        tissue_sample_ids, 
+        dataset_dir, 
+        camera_names, 
+        camera_file_suffixes, 
+        # num_episodes,
+        task_config,
+        norm_stats=None,
+        max_len=None,
+        command_list=None,
+        use_language=False,
+        language_encoder="distilbert",
+        ):
+
+        super(EpisodicDatasetDvrkGeneric).__init__()
+
+        if len(tissue_sample_ids) == 0:
+            raise ValueError("No tissue samples found in the dataset directory.")
+        
+        # self.episode_ids = episode_ids
+        self.episode_ids = episode_ids if len(episode_ids) > 0 else [0]
+        self.dataset_dir = dataset_dir
+        self.camera_names = camera_names
+        self.camera_file_suffixes = camera_file_suffixes
+        self.norm_stats = norm_stats
+        self.max_len = max_len
+        if command_list is not None:
+            self.command_list = [cmd.strip("'\"") for cmd in command_list]
+        self.total_items = 0
+        self.use_language = use_language
+        # self.num_episodes = num_episodes
+        self.task_config = task_config
+        self.action_mode = task_config['action_mode'][0]
+        self.norm_scheme = task_config['norm_scheme']
+        self.phantom = task_config['phantom']
+        self.recovery_ratio = task_config['recovery_ratio']
+        self.is_sim = None
+        self.cutting_action_pad_size = task_config['cutting_action_pad_size']
+        self.img_height, self.img_width = [240, 320]
+        self.num_samples = task_config['num_episodes']
+
+        # Load the tissue samples and their phases and demos (for later stitching of the episodes)        
+        self.tissue_phase_demo_dict = {}
+        self.command_embeddings_dict = {}
+
+        if task_config['available_phase_commands'] is not None:
+            self.available_phase_commands = task_config['available_phase_commands']
+        else:
+            self.available_phase_commands = {
+                (1, 3): "apply first clip on the left tube", 
+                (4, 5):  "apply second clip on the left tube", 
+                (6, 7): "apply third clip on the left tube",
+                (8, 9): "cut the left tube",
+                (10, 11): "apply first clip on the right tube",
+                (12, 13): "apply second clip on the right tube",
+                (14, 15): "apply third clip on the right tube",
+                (16, 17): "cut the right tube"
+            }
+
+        for tissue_sample_id in tissue_sample_ids:
+            if self.phantom:
+                tissue_sample_name = f"phantom_{tissue_sample_id}"
+            else:
+                tissue_sample_name = f"tissue_{tissue_sample_id}"
+            tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
+            phases = os.listdir(tissue_sample_dir_path)
+            self.tissue_phase_demo_dict[tissue_sample_name] = {}
+
+            for phase_sample in phases:
+                demo_samples_path = os.path.join(tissue_sample_dir_path, phase_sample)
+
+                if os.path.isfile(demo_samples_path):
+                    continue  # Skip if the tissue sample path is not a directory
+
+                demo_samples = os.listdir(demo_samples_path)
+
+                ## remove corrections folder
+                for demo_sample in demo_samples:
+                    if demo_sample == "Corrections":
+                        demo_samples.remove(demo_sample)
+
+                ## initialize the dictionary for the tissue sample
+                if tissue_sample_name not in self.tissue_phase_demo_dict:
+                    self.tissue_phase_demo_dict[tissue_sample_name] = {}
+
+                ## adjust the number of demos for the recovery phase
+                if phase_sample.endswith("_recovery"):
+                    num_of_perfect_demos = len(os.listdir(os.path.join(tissue_sample_dir_path, phase_sample[:-9])))
+                    num_of_recovery_demos = int(num_of_perfect_demos * self.recovery_ratio)
+                    # print(f"Recovery phase: {phase_sample}, num of perfect demos: {num_of_perfect_demos}, num of recovery demos: {num_of_recovery_demos}")
+                    if num_of_recovery_demos == num_of_perfect_demos:
+                        demo_samples = demo_samples
+                    else:
+                        demo_samples = demo_samples[:num_of_recovery_demos]
+
+                # Add or update the demo samples in the dictionary
+                self.tissue_phase_demo_dict[tissue_sample_name].setdefault(phase_sample, []).extend(demo_samples)
+
+            ## create language embeddings
+            if self.use_language:
+
+                self.language_encoder = language_encoder
+                tokenizer, model = initialize_model_and_tokenizer(self.language_encoder)
+                unique_phase_folder_names = np.unique([phase_folder_name for tissue_sample in self.tissue_phase_demo_dict.values() for phase_folder_name in tissue_sample.keys()])
+
+                # print("phase:", unique_phase_folder_names)
+                print("\ngenerating command embeddings...\n")
+                self.command_embeddings_dict[tissue_sample_name] = self.generate_command_embeddings(unique_phase_folder_names, self.language_encoder, tokenizer, model)
+
+                # json_name = f"candidate_embeddings_{self.language_encoder}.json"
+                # json_path = os.path.join(tissue_sample_dir_path, json_name)
+
+                # self.command_embeddings_dict[tissue_sample_name] = generate_command_embeddings(unique_phase_folder_names, json_path)
+                # print("embeddings:", self.command_embeddings_dict)
+
+                del tokenizer, model
+                # print(f"   {phase_sample}, {demo_samples}\n")
+        print("num of tissues:", len(self.tissue_phase_demo_dict.keys()))
+        
+        # print("num of samples:", sum(len(samples) for samples in self.tissue_phase_demo_dict.values()))
+        total_count = 0
+        for phase_dict in self.tissue_phase_demo_dict.values():
+            for demo_samples in phase_dict.values():
+                total_count += len(demo_samples)
+        self.num_samples = total_count
+        print("total count:", total_count)
+        # print("self.command_embeddings_dict: ", self.command_embeddings_dict.keys())
+
+        self.all_samples = [(tissue_sample, phase, sample) 
+                            for tissue_sample in self.tissue_phase_demo_dict
+                            for phase in self.tissue_phase_demo_dict[tissue_sample]
+                            for sample in self.tissue_phase_demo_dict[tissue_sample][phase]]
+        
+
+        self.header_name_qpos_psm1 = ["psm1_pose.position.x", "psm1_pose.position.y", "psm1_pose.position.z",
+                                "psm1_pose.orientation.x", "psm1_pose.orientation.y", "psm1_pose.orientation.z", "psm1_pose.orientation.w",
+                                "psm1_jaw"]
+        
+        self.header_name_qpos_psm2 = ["psm2_pose.position.x", "psm2_pose.position.y", "psm2_pose.position.z",
+                                "psm2_pose.orientation.x", "psm2_pose.orientation.y", "psm2_pose.orientation.z", "psm2_pose.orientation.w",
+                                "psm2_jaw"]
+
+        self.header_name_actions_psm1 = ["psm1_sp.position.x", "psm1_sp.position.y", "psm1_sp.position.z",
+                                    "psm1_sp.orientation.x", "psm1_sp.orientation.y", "psm1_sp.orientation.z", "psm1_sp.orientation.w",
+                                    "psm1_jaw_sp"]
+
+        self.header_name_actions_psm2 = ["psm2_sp.position.x", "psm2_sp.position.y", "psm2_sp.position.z",
+                                    "psm2_sp.orientation.x", "psm2_sp.orientation.y", "psm2_sp.orientation.z", "psm2_sp.orientation.w",
+                                    "psm2_jaw_sp"]
+        
+        self.header_ecm = ["ecm_pose.position.x", "ecm_pose.position.y", "ecm_pose.position.z",
+                            "ecm_pose.orientation.x", "ecm_pose.orientation.y", 
+                            "ecm_pose.orientation.z", "ecm_pose.orientation.w"]
+        
+        self.quat_cp_psm1 = ["psm1_pose.orientation.x", "psm1_pose.orientation.y", "psm1_pose.orientation.z", "psm1_pose.orientation.w"]
+        self.quat_cp_psm2 = ["psm2_pose.orientation.x", "psm2_pose.orientation.y", "psm2_pose.orientation.z", "psm2_pose.orientation.w"]
+
+        # self.transforms = DataAug([224, 224])
+        self.transforms = DataAug([self.img_height, self.img_width])
+
+        # self.__getitem__(0) # initialize self.is_sim
+
+    def compute_diff_actions(self, qpos, action):
+        """
+        qpos: current position [9]
+        action: actions commanded by the user [n_actions x 9]
+        returns: relative actions w.r.t qpos
+        """
+        # find diff first and then fill-in the quaternion differences properly
+        diff = action - qpos
+
+        quat_init = qpos[3:7]
+        quat_actions = action[:, 3:7]
+
+        # convert quaternions to rotation matrices
+        r_init = R.from_quat(quat_init)
+        r_actions = R.from_quat(quat_actions)
+        # find their diff
+        diff_rs = r_init.inv()*r_actions 
+        # extract their first two columns
+        diff_6d = diff_rs.as_matrix()[:,:,:2]
+        diff_6d = diff_6d.transpose(0,2,1).reshape(-1, 6) # first column then second column
+        
+        diff_expand = np.zeros((diff.shape[0], 10)) # TODO: hard-coded dim (10) for a single arm
+        diff_expand[:diff.shape[0], 0:diff.shape[1]] = diff 
+        diff = diff_expand
+
+        diff[:, 3:9] = diff_6d
+        diff[:, 9] = action[:, -1] # fill in the jaw angle (note: jaw angle is not relative)
+        return diff
+    
+    def compute_relative_actions_in_SE3(self, qpos, action):
+        """
+        Note: this is the proper implementation
+        qpos: current position (measured_cp), xyz, xyzw, jaw angle (8-dim vector)
+        action: set point on the dvrk (action_horizon x 8)
+        
+        returns: relative position and rotation w.r.t qpos
+        """
+        
+        diff = np.zeros((action.shape[0], 10)) # TODO: hard-coded dim (10) for a single arm
+
+        # convert current pose to SE(3)
+        qpos_wxyz = rotations.quaternion_wxyz_from_xyzw(qpos[3:7])
+        qpos_py3d = np.concatenate((qpos[0:3], qpos_wxyz))
+        g_qpos = transformations.transform_from_pq(qpos_py3d) # no jaw angle!
+
+        # convert actions to SE(3)
+        action_wxyz = batch_rotations.batch_quaternion_wxyz_from_xyzw(action[:, 3:7]) 
+        action_py3d = np.concatenate((action[:, 0:3], action_wxyz), axis = 1)
+        g_action = trajectories.transforms_from_pqs(action_py3d)
+
+        # invert current pose
+        g_qpos_inv = transformations.invert_transform(g_qpos)
+        diff_SE3 = trajectories.concat_one_to_many(g_qpos_inv, g_action)
+
+        # construct 6d rot
+        diff_6d = diff_SE3[:,0:3,:2]
+        diff_6d = diff_6d.transpose(0,2,1).reshape(-1, 6) # first column then second column
+        
+        # fill in translation elements
+        diff[:, 0:3] = diff_SE3[:, 0:3, 3] # replace the translations with the last column first three rows of SE3
+        # fill in 6d rot
+        diff[:, 3:9] = diff_6d
+        # fill in jaw angle (note: jaw angle is absolute, not relative)
+        diff[:, 9] = action[:, 7]
+        return diff
+
+    # misnomer: jaw angles are also being normalized
+    def min_max_scale_positions_only(self, diffs):
+        """
+        diffs: n_actions x 20
+        return: normalized n_actions x 20
+        Note: BOTH POSITIONS AND JAW ANGLES ARE NORMALIZED (orientations remain original)
+        """
+        max_ = self.task_config['action_mode'][1]['max_']
+        min_ = self.task_config['action_mode'][1]['min_']
+        normalized = (diffs - min_) / (max_ - min_) * 2 - 1
+
+        # replace w/ originals for 6D rot
+        normalized[:, 3:9] = diffs[:, 3:9]
+        normalized[:, 13:19] = diffs[:, 13:19]
+
+        return normalized
+    
+    def standardize_positions_only(self, diffs):
+        """
+        diffs: n_actions x 20
+        return: normalized n_actions x 20 (zero mean unit variance)
+        Note: BOTH POSITIONS AND JAW ANGLES ARE NORMALIZED (orientations remain original)
+        """
+        mean = self.task_config['action_mode'][1]['mean']
+        std = self.task_config['action_mode'][1]['std']
+        # print("mean shape", mean.shape)
+        # print("std shape", std.shape)
+        normalized = (diffs - mean) / std
+
+        # replace w/ originals for 6D rot
+        normalized[:, 3:9] = diffs[:, 3:9]
+        normalized[:, 13:19] = diffs[:, 13:19]
+
+        return normalized
+
+    def generate_command_embeddings(self, unique_phase_folder_names, encoder, tokenizer, model):
+        
+        # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
+        phase_command_embeddings_dict = {}
+        for phase_folder_name in tqdm(unique_phase_folder_names, desc="Embedding phase commands"):
+            if phase_folder_name.endswith("_recovery"):
+                phase_folder_name = phase_folder_name[:-9]
+            elif phase_folder_name.startswith("ACTUAL_CUTTING"):
+                if phase_folder_name.endswith("_left"):
+                    phase_folder_name = "8_go_to_the_cutting_position_left_tube"
+                elif phase_folder_name.endswith("_right"):
+                    phase_folder_name = "16_go_to_the_cutting_position_right_tube"
+
+            phase_num, phase_command = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:])
+            # print("phase_num:", phase_num)
+            if phase_num.isdigit():
+                phase_num = int(phase_num)
+                for phase_range, command in self.available_phase_commands.items():
+                    if phase_range[0] <= phase_num <= phase_range[1]:
+                        phase_command = command
+                        break
+
+                embedding = encode_text(phase_command, encoder, tokenizer, model)
+                phase_command_embeddings_dict[phase_folder_name]= (phase_command, embedding)
+
+        return phase_command_embeddings_dict
+
+
+    def find_image_at_start_ts(self, phase_num_list, dataset_paths, start_ts):
+        cumulative_len = 0
+        count = 0
+        for dataset_path in dataset_paths:
+            csv_path = os.path.join(dataset_path, "ee_csv.csv")
+            input_csv = pd.read_csv(csv_path)
+            episode_len = len(input_csv)
+            if (phase_num_list[count] == 8 or phase_num_list[count] == 16) and start_ts >= episode_len - self.cutting_action_pad_size:
+                current_len = len(os.listdir(os.path.join(dataset_path, "left_img_dir")))
+                # print("cutting action in", dataset_path, "current_len:", current_len)
+            else:
+                current_len = episode_len
+            if cumulative_len + current_len > start_ts:
+                image_index = start_ts - cumulative_len
+                image_path_l = os.path.join(dataset_path, "left_img_dir",
+                                        "frame{:06d}".format(image_index) + "_left.jpg")
+
+                image_path_lw = os.path.join(dataset_path, "endo_psm2",
+                                        "frame{:06d}".format(image_index) + "_psm2.jpg")
+                image_path_rw = os.path.join(dataset_path, "endo_psm1",
+                                        "frame{:06d}".format(image_index) + "_psm1.jpg")
+                return image_path_l, image_path_lw, image_path_rw
+            cumulative_len += current_len
+            count += 1
+        
+        last_idx = len(os.listdir(os.path.join(dataset_path, "left_img_dir"))) - 1
+        image_path_l = os.path.join(dataset_path, "left_img_dir",
+                                "frame{:06d}".format(last_idx) + "_left.jpg")
+
+        image_path_lw = os.path.join(dataset_path, "endo_psm2",
+                                "frame{:06d}".format(last_idx) + "_psm2.jpg")
+        image_path_rw = os.path.join(dataset_path, "endo_psm1",
+                                "frame{:06d}".format(last_idx) + "_psm1.jpg")
+        return image_path_l, image_path_lw, image_path_rw
+
+
+    def __len__(self):
+        # if self.total_items == 0:
+        #     for tissue_sample in self.tissue_phase_demo_dict.values():
+        #         for phase_sample in tissue_sample.values():
+        #             self.total_items += len(phase_sample)
+        # return self.total_items        
+        return len(self.episode_ids)
+
+
+    def __getitem__(self, index):
+        # sample_full_episode = False # hardcode
+        max_len = self.max_len
+
+        # Get the tissue sample, phase, and sample based on the index
+        episode_id = self.episode_ids[index]
+        if episode_id < self.num_samples:
+            tissue_sample, phase, sample = self.all_samples[episode_id]
+        else:
+            print("episode_id out of range")
+            tissue_sample, phase, sample = self.all_samples[episode_id % self.num_samples]
+        # print(tissue_sample, phase, sample)
+        ## get the phase numbers to combine subtasks
+        phase_num, phase_command = phase.split("_")[0], " ".join(phase.split("_")[1:])
+        # print("phase_num:", phase_num)
+        if phase_num.isdigit():
+            phase_num = int(phase_num)
+            for phase_range, command in self.available_phase_commands.items():
+                if phase_range[0] <= phase_num <= phase_range[1]:
+                    phase_num_list = [num for num in range(phase_range[0], phase_range[1] + 1)]
+                    break
+        
+        episode_len = 0
+        csv = pd.DataFrame()
+        dataset_paths = []
+        count = 0
+        p = None
+        for phase_num in phase_num_list:
+            for phase_name in self.tissue_phase_demo_dict[tissue_sample].keys():
+                if phase_name.startswith(f"{phase_num}_"):
+                    p = phase_name
+                    break
+            if p is None:
+                print(f"Phase {phase_num} not found in the dataset for tissue sample {tissue_sample}")
+                assert False
+            sample = np.random.choice(self.tissue_phase_demo_dict[tissue_sample][p])
+            dataset_paths.append(os.path.join(self.dataset_dir, f"{tissue_sample}/{p}/{sample}"))
+            csv_path = os.path.join(dataset_paths[count], "ee_csv.csv")
+            input_csv = pd.read_csv(csv_path)
+            episode_len += len(input_csv)
+            csv = pd.concat([csv, input_csv], ignore_index=True)
+            count += 1
+
+
+        start_ts = np.random.choice(episode_len)
+        image_path_l, image_path_lw, image_path_rw = self.find_image_at_start_ts(phase_num_list, dataset_paths, start_ts)  
+        
+        img_l = cv2.imread(image_path_l)
+        # img_r = cv2.imread(image_path_r)
+        img_lw = cv2.imread(image_path_lw)
+        img_rw = cv2.imread(image_path_rw)
+        # img_l = cv2.resize(img_l, [224, 224])
+        # img_r = cv2.resize(img_r, [224, 224])
+        # img_lw = cv2.resize(img_lw, [224, 224])
+        # img_rw = cv2.resize(img_rw, [224, 224])
+
+        ## rectify rotation for the right wrist cam
+        rotate_ids = [5, 6, 8, 12, 13, 14, 18]
+        for rotate_id in rotate_ids:
+            if not self.phantom and tissue_sample.endswith(f"{rotate_id}"):
+                angle = -52.0
+                img_rw = rotate_image(img_rw, angle)
+                shift_x, shift_y = 10, 0 
+                img_rw = shift_image(img_rw, shift_x, shift_y)
+                break  # Exit the loop after the first match
+
+        img_l = cv2.resize(img_l, [self.img_width, self.img_height])
+        # img_r = cv2.resize(img_r, [self.img_width, self.img_height])
+        img_lw = cv2.resize(img_lw, [self.img_width, self.img_height])
+        img_rw = cv2.resize(img_rw, [self.img_width, self.img_height])
+
+        img_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
+        # img_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
+        img_lw = cv2.cvtColor(img_lw, cv2.COLOR_BGR2RGB)
+        img_rw = cv2.cvtColor(img_rw, cv2.COLOR_BGR2RGB)
+
+        # construct observations
+        img_l = torch.from_numpy(img_l).float() # channel last
+        # img_r = torch.from_numpy(img_r).float()
+        img_lw = torch.from_numpy(img_lw).float() # channel last
+        img_rw = torch.from_numpy(img_rw).float() # channel last
+
+        # bring channel to to the third
+        img_l = torch.einsum('h w c -> c h w', img_l)
+        # img_r = torch.einsum('h w c -> c h w', img_r)
+        img_lw = torch.einsum('h w c -> c h w', img_lw)
+        img_rw = torch.einsum('h w c -> c h w', img_rw)
+
+        # normalize image and change dtype to float
+        img_l = img_l / 255.0
+        # img_r = img_r / 255.0
+        img_lw = img_lw / 255.0
+        img_rw = img_rw / 255.0
+
+        # data aug
+        tfmed = self.transforms([img_l, img_lw, img_rw])
+        # tfmed = self.transforms([img_l, img_r, img_lw, img_rw])
+        img_l = tfmed['img_l']
+        # img_r = tfmed['img_r']
+        img_lw = tfmed['img_lw']
+        img_rw = tfmed['img_rw']
+
+        image_data = np.stack([img_l, img_lw, img_rw], axis = 0) 
+        
+        # get current position and actions
+        qpos_psm1 = csv[self.header_name_qpos_psm1].iloc[start_ts, :].to_numpy()
+        action_psm1 = csv[self.header_name_actions_psm1].iloc[start_ts:start_ts+400].to_numpy() # note 400 added here
+        qpos_psm2 = csv[self.header_name_qpos_psm2].iloc[start_ts, :].to_numpy()
+        action_psm2 = csv[self.header_name_actions_psm2].iloc[start_ts:start_ts+400].to_numpy() # note 400 added here
+    
+        diff_psm1 = None
+        diff_psm2 = None
+
+        # compute relative actions TODO: make it work for SE3 scenarios
+        if self.action_mode == 'hybrid':
+            diff_psm1 = self.compute_diff_actions(qpos_psm1, action_psm1)
+            diff_psm2 = self.compute_diff_actions(qpos_psm2, action_psm2)
+        elif self.action_mode == 'ego':
+            diff_psm1 = self.compute_relative_actions_in_SE3(qpos_psm1, action_psm1)
+            diff_psm2 = self.compute_relative_actions_in_SE3(qpos_psm2, action_psm2)
+        else:
+            raise(NotImplementedError) 
+
+        # stack the actions along column dim
+        action = np.column_stack((diff_psm1, diff_psm2))
+
+        # normalize data
+        if self.norm_scheme == 'min_max': 
+          action = self.min_max_scale_positions_only(action)
+        elif self.norm_scheme == 'std':
+           action = self.standardize_positions_only(action)
+        else:
+            raise NotImplementedError
+
+        action_len = min(episode_len - start_ts, 400) # TODO: a bit messy code
+
+        padded_action = np.zeros((400, 20), dtype=np.float32) # TODO: this is hardcoded to be 400 
+        # timesteps by default, but you will be taking a subset anyway later on i.e. chunk size, so it's probably ok and also
+        # you will never be making predictions beyond 400 timestep horizon
+        # also hardcoded to 10 dim per arm
+        padded_action[:action_len] = action
+        is_pad = np.zeros(400)
+        is_pad[action_len:] = 1
+
+        # set current poses to zeros (dvrk kinematics unreliable)
+        qpos = np.zeros(20)
+
+        # construct observations
+        # image_data = torch.from_numpy(all_cam_images)
+        qpos_data = torch.from_numpy(qpos).float()
+        action_data = torch.from_numpy(padded_action).float()
+        is_pad = torch.from_numpy(is_pad).bool()
+
+        # channel last
+        # image_data = torch.einsum('k h w c -> k c h w', image_data)
+
+        # normalize image and change dtype to float
+        # image_data = image_data / 255.0
+        # action_data = (action_data - mean) / std
+      
+        if self.use_language:
+            if phase.endswith("_recovery"):
+                phase = phase[:-9]
+            elif phase.startswith("ACTUAL_CUTTING"):
+                if phase.endswith("_left"):
+                    phase = "8_go_to_the_cutting_position_left_tube"
+                elif phase.endswith("_right"):
+                    phase = "16_go_to_the_cutting_position_right_tube"
+            # print(self.command_embeddings_dict[tissue_sample].keys())
+            phase_command, embedding = self.command_embeddings_dict[tissue_sample][phase]
+            command_embedding = torch.tensor(embedding).squeeze()
+            return image_data, qpos_data, action_data, is_pad, command_embedding
+        else:
+            return image_data, qpos_data, action_data, is_pad
 
 """
 Test the EpisodicDatasetDvrkGeneric class.
 """
-# if __name__ == "__main__":
-#     seed = 42
-#     set_seed(seed)
-#     # Parameters for the test
-#     path_to_dataset = os.getenv("PATH_TO_DATASET")
-#     # path_to_dataset = "/home/imerse/chole_ws/data"
+if __name__ == "__main__":
+    seed = random.randint(0, 1000)
+    set_seed(seed)
+    for i in range(10):
+        # seed = random.randint(0, 1000)
+        # set_seed(seed)
+        # Parameters for the test
+        path_to_dataset = os.getenv("PATH_TO_DATASET")
+        # path_to_dataset = "/home/imerse/chole_ws/data"
 
-#     dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
-#     tissue_samples_ids = [1]
-#     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
-#     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-#     num_episodes = 200 # Total number of episodes
-#     use_language_flag = True
-#     from dvrk_scripts.constants_dvrk import TASK_CONFIGS
-#     task_config = TASK_CONFIGS['base_chole_clipping_cutting']
-#     episode_ids = [i for i in range(num_episodes)]
-#     dataset = EpisodicDatasetDvrkGeneric(
-#                 episode_ids,
-#                 tissue_samples_ids,
-#                 dataset_dir,
-#                 camera_names,
-#                 camera_file_suffixes,
-#                 # num_episodes,
-#                 task_config,
-#                 use_language=use_language_flag
-#                 )
+        dataset_dir = os.path.join(path_to_dataset, "base_chole_clipping_cutting")
+        tissue_samples_ids = [8]
+        camera_names = ["left_img_dir", "endo_psm1", "endo_psm2"]
+        camera_file_suffixes = ["_left.jpg", "_psm1.jpg", "_psm2.jpg"]
+        num_episodes = 200 # Total number of episodes
+        use_language_flag = True
+        from dvrk_scripts.constants_dvrk import TASK_CONFIGS
+        task_config = TASK_CONFIGS['base_chole_clipping_cutting']
+        episode_ids = [i for i in range(num_episodes)]
+        dataset = EpisodicDatasetDvrkGeneric(
+                    episode_ids,
+                    tissue_samples_ids,
+                    dataset_dir,
+                    camera_names,
+                    camera_file_suffixes,
+                    # num_episodes,
+                    task_config,
+                    use_language=use_language_flag
+                    )
 
-#     # Sample a random item from the dataset
-#     rdm_idx = np.random.randint(0, len(dataset))
-#     print("idx:", rdm_idx)
-#     if use_language_flag:
-#         image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
-#         print(f"Image sequence shape: {image_data.shape}")
-#         # print(f"Command: {command}")
-#     else:
-#         image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
+        # Sample a random item from the dataset
+        rdm_idx = np.random.randint(0, len(dataset))
+        print("idx:", rdm_idx)
+        if use_language_flag:
+            image_data, qpos_data, action_data, is_pad, command_embedding = dataset[rdm_idx]
+            print(f"Image sequence shape: {image_data.shape}")
+            # print(f"Command: {command}")
+        else:
+            image_data, qpos_data, action_data, is_pad = dataset[rdm_idx]   
 
 
             # Create a figure with subplots: one row per timestamp, one column per camera
