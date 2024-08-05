@@ -302,16 +302,10 @@ def load_data_dvrk(
     dataset_path = task_config['dataset_dir']
     tissue_samples_ids = task_config['tissue_samples_ids']
     camera_file_suffixes = task_config['camera_file_suffixes']
-    merging_subtasks = task_config['merging_subtasks']
-    # if action_mode == 'SE3': # TODO update like hybrid dataset accordingly
-    #     train_dataset = EpisodicDatasetDvrkSE3(train_indices, dataset_path, camera_names, norm_stats)
-    #     val_dataset = EpisodicDatasetDvrkSE3(val_indices, dataset_path, camera_names, norm_stats)
-    # elif action_mode == 'hybrid':
-    #     train_dataset = EpisodicDatasetDvrkHybrid(train_indices, dataset_path, camera_names, norm_stats, task_config)
-    #     val_dataset = EpisodicDatasetDvrkHybrid(val_indices, dataset_path, camera_names, norm_stats, task_config)
-    if merging_subtasks:
-        print("\n-------------loading merged training data-------------\n")
-        train_datasets = EpisodicDatasetDvrkMerged(
+
+    print("\n-------------loading training data-------------\n")
+
+    train_datasets = EpisodicDatasetDvrkGeneric(
             train_indices,
             tissue_samples_ids,
             dataset_dir,
@@ -320,40 +314,17 @@ def load_data_dvrk(
             task_config,
             use_language=use_language,
         )
-        print("\n-------------loading merged validation data-------------\n")
-        
-        val_datasets = EpisodicDatasetDvrkMerged(
-                val_indices,
-                tissue_samples_ids,
-                dataset_dir,
-                camera_names,
-                camera_file_suffixes, 
-                task_config,
-                use_language=use_language,
-            )
-    else:
-        print("\n-------------loading training data-------------\n")
-
-        train_datasets = EpisodicDatasetDvrkGeneric(
-                train_indices,
-                tissue_samples_ids,
-                dataset_dir,
-                camera_names,
-                camera_file_suffixes, 
-                task_config,
-                use_language=use_language,
-            )
-        print("\n-------------loading validation data-------------\n")
-        
-        val_datasets = EpisodicDatasetDvrkGeneric(
-                val_indices,
-                tissue_samples_ids,
-                dataset_dir,
-                camera_names,
-                camera_file_suffixes, 
-                task_config,
-                use_language=use_language,
-            )
+    print("\n-------------loading validation data-------------\n")
+    
+    val_datasets = EpisodicDatasetDvrkGeneric(
+            val_indices,
+            tissue_samples_ids,
+            dataset_dir,
+            camera_names,
+            camera_file_suffixes, 
+            task_config,
+            use_language=use_language,
+        )
     # merged_train_dataset = ConcatDataset(train_datasets)
     # merged_val_dataset = ConcatDataset(val_datasets)
     # train_dataset = EpisodicDatasetDvrkGeneric(train_indices, dataset_path, camera_names, norm_stats, task_config)
