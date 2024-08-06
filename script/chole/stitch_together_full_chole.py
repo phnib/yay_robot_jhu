@@ -169,7 +169,7 @@ if __name__ == "__main__":
     num_videos = 1
     num_phases = 17
     tissue = 12  # tissue_1 has no continuous phases, so we are using >= tissue_4
-    before_phase_offset, after_phase_offset = 10, 10
+    before_phase_offset, after_phase_offset = 0, 10
     phase_text_flag = False
     desired_camera_names = ["endo_psm2", "left_img_dir", "endo_psm1"] # ["endo_psm2", "left_img_dir", "endo_psm1"] # ["left_img_dir"] # None ["left_img_dir", "endo_psm1"] ["endo_psm2", "left_img_dir", "endo_psm1"]
     save_each_n_frame_as_image_wo_text = 30

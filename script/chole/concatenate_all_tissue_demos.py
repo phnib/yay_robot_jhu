@@ -106,7 +106,7 @@ if __name__ == "__main__":
     from datetime import datetime
     import os
 
-    tissue_indices = [1] # [1,4,5,6,8,12]
+    tissue_indices = [50] # [1,4,5,6,8,12,13] # [14,18,19,22,23,30,32,35,39,40,41,47,49]
     tissue_prefix = "tissue" # "tissue" "phantom"
     dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging" "debugging2"
 
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     output_path = Path(os.path.join(chole_scripts_path, "AllDemosVideos"))
 
     # Generate the combined video
-    before_phase_offset, after_phase_offset = 10, 10
+    before_phase_offset, after_phase_offset = 0, 10
     with_label_flag = True
     desired_camera_names = None # ["left_img_dir"] # None 
     for tissue_idx in tissue_indices:
