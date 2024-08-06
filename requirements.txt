@@ -4,7 +4,7 @@ torchvision
 tqdm
 wandb
 ipdb
-numpy==1.23.1 # for h5py_cache
+numpy
 matplotlib
 moviepy 
 imageio
@@ -21,7 +21,6 @@ mujoco==2.3.3
 dm_control==1.0.9
 einops
 packaging
-h5py
 ipython
 
 # aloha
