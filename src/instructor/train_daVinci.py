@@ -61,9 +61,9 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
         if args.use_jaw_values_flag and args.use_phase_history_flag:
             logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
         elif args.use_jaw_values_flag:
-            logits, temperature, _ = model(images, psm2_psm1_jaw_values)
+            logits, temperature, _ = model(images, psm2_psm1_jaw_values=psm2_psm1_jaw_values)
         elif args.use_phase_history_flag:
-            logits, temperature, _ = model(images, phase_history_indexed)
+            logits, temperature, _ = model(images, phase_history=phase_history_indexed)
         else:
             logits, temperature, _ = model(images)
 
@@ -124,9 +124,9 @@ def evaluate(model, dataloader, criterion, device):
             if args.use_jaw_values_flag and args.use_phase_history_flag:
                 logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
             elif args.use_jaw_values_flag:
-                logits, temperature, _ = model(images, psm2_psm1_jaw_values)
+                logits, temperature, _ = model(images, psm2_psm1_jaw_values=psm2_psm1_jaw_values)
             elif args.use_phase_history_flag:
-                logits, temperature, _ = model(images, phase_history_indexed)
+                logits, temperature, _ = model(images, phase_history=phase_history_indexed)
             else:
                 logits, temperature, _ = model(images)
 
@@ -179,9 +179,9 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
             if args.use_jaw_values_flag and args.use_phase_history_flag:
                 logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
             elif args.use_jaw_values_flag:
-                logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values)
+                logits, temperature, _ = model(images, psm2_psm1_jaw_values=psm2_psm1_jaw_values)
             elif args.use_phase_history_flag:
-                logits, temperature, predicted_embedding = model(images, phase_history_indexed)
+                logits, temperature, _ = model(images, phase_history=phase_history_indexed)
             else:
                 logits, temperature, _ = model(images)
             decoded_texts = model.decode_logits(logits, temperature) 

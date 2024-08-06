@@ -322,7 +322,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         # Get the last n performed phases from the last prediction timestep on
         if self.phase_history_only_phase_switches_flag:
             # Get the last n performed phases from the current phase on
-            last_pred_ts_phase = self.get_embedding_command_phase_for_ts(selected_phase_demo_dict, last_pred_ts)[2]
+            last_pred_ts_phase = self.get_embedding_command_phase_for_ts(selected_phase_demo_dict, last_pred_ts)[2].replace("_recovery", "")
             last_pred_ts_phase_idx = sorted_phases.index(last_pred_ts_phase)
             phase_history_phase_folder_names = sorted_phases[max(0, last_pred_ts_phase_idx - self.phase_history_len + 1):last_pred_ts_phase_idx+1]
             phase_history = [self.command_embeddings_dict[phase_command][0] for phase_command in phase_history_phase_folder_names] # Transform to the commands corresponding to the phase folder names
