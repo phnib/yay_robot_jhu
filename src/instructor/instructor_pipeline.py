@@ -276,7 +276,7 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
         cv2.putText(current_frames_concatenated_bgr_upscaled, gt_text, (text_position_x, 60), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     # Add the jaw values to right side of the image
     if current_jaw_values is not None:
-        jaw_text = f"Jaw values: PSM2: {current_jaw_values[1]:.2f}, PSM1: {current_jaw_values[0]:.2f}"
+        jaw_text = f"Jaw values: PSM2: {current_jaw_values[0]:.2f}, PSM1: {current_jaw_values[1]:.2f}"
         jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1]//3 + 100
         cv2.putText(current_frames_concatenated_bgr_upscaled, jaw_text, (jaw_text_position_x, 25), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     if phase_history is not None:
@@ -334,7 +334,7 @@ def instructor_pipeline(args):
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
     # Init instructor model + load parameters and weigths from checkpoint
-    checkpoint = torch.load(args.ckpt_path)
+    checkpoint = torch.load(args.ckpt_path, map_location=device)
     history_len = checkpoint.history_len 
     candidate_texts = checkpoint.candidate_texts 
     candidate_embeddings = checkpoint.candidate_embeddings
@@ -379,7 +379,7 @@ def instructor_pipeline(args):
         
         # Instructor publisher for the language instruction prediction
         instruction_publisher = rospy.Publisher("/instructor_prediction", String, queue_size=args.publisher_queue_size) 
-        instruction_embedding_publisher = rospy.Publisher("/instructor_embedding", Float32MultiArray, queue_size=args.publisher_queue_size)
+        # instruction_embedding_publisher = rospy.Publisher("/instructor_embedding", Float32MultiArray, queue_size=args.publisher_queue_size)
         
         # Wrist camera subs
         if "endo_psm1" in args.camera_names:
@@ -504,6 +504,7 @@ def instructor_pipeline(args):
                         logits_buffer.append(logits)
                         stacked_logits = torch.stack(list(logits_buffer)).squeeze(1)
                         smoothed_logits = apply_logits_lp_filter(stacked_logits, filter_mode=args.lp_filter_mode, smoothing_factor=args.lp_ema_smoothing_factor) 
+                        print(f"Smoothed probabilities: {torch.nn.functional.softmax(smoothed_logits)*100}")
                     else:
                         smoothed_logits = logits
                     # Decode the model output to the language instruction
@@ -514,7 +515,7 @@ def instructor_pipeline(args):
                     # Publish the predicted language instruction
                     if args.input_type == "live": 
                         instruction_publisher.publish(predicted_instruction)
-                        instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))  
+                        # instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))  
                     
                     # # TODO: Remove later again - debugging
                     # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
@@ -552,7 +553,7 @@ def instructor_pipeline(args):
                 # Publish the predicted language instruction
                 if args.input_type == "live": 
                     instruction_publisher.publish(predicted_instruction)
-                    instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))      
+                    # instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))      
             
             # Update the phase history list
             if use_phase_history_flag and new_pred_flag:
@@ -667,13 +668,13 @@ def parse_pipeline_args():
     # --------------------------- Instruction model parameters ---------------------------
     
     # Instructor model path
-    default_ckpt_folder_name = "base_chole_clipping_cutting_clip_sda_full_phase_set_one_ts_jaw_history_w_transformer_h_len_3_cosine_scheduler"
+    default_ckpt_folder_name = "instructor_models" # "base_chole_clipping_cutting_clip_sda_full_phase_set_one_ts_jaw_history_w_transformer_h_len_3_cosine_scheduler"
     default_ckpt_folder_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_ckpts", "hl", default_ckpt_folder_name)
-    default_ckpt_file_name = "best_val_loss_epoch=548"
+    default_ckpt_file_name = "best_val_loss_epoch=264" #"best_val_loss_epoch=548"
     parser.add_argument('--ckpt_path', type=str, default=os.path.join(default_ckpt_folder_path, f"{default_ckpt_file_name}.ckpt"),
                         help="Path to the instructor model")
 
-    # Prediction stride value to only predict every x frames
+    # Prediction stride value to only predict every x framesF
     parser.add_argument('--prediction_stride', type=int, default=30, help="Prediction stride value (e.g., predict every x frames)")
 
     # TODO: Play around with which LP parameter work best
