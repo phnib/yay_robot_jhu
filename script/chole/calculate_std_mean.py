@@ -137,7 +137,7 @@ def generate_task_config():
         ids = [1, 2, 3]
         data_dir = "/home/imerse/chole_ws/data/phantom_chole/"
     else:
-        ids = [4, 5, 6, 8, 12, 13, 14, 18, 19, 22, 23, 30, 32, 35, 39, 40]
+        ids = [4, 5, 6, 8, 12, 13, 14, 18, 19, 22, 23, 30, 32, 35, 39, 40, 41, 47, 49]
         data_dir = "/home/imerse/chole_ws/data/base_chole_clipping_cutting/"
     
     mean, std, min, max = compute_diffs(ids, data_dir)

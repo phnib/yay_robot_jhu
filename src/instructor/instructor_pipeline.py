@@ -27,7 +27,7 @@ else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 
 from instructor.train_daVinci import build_instructor, log_confusion_matrix, log_combined_image
-from aloha_pro.aloha_scripts.constants_daVinci import DATASET_CONFIGS
+from instructor.constants_daVinci import DATASET_CONFIGS
 from instructor.dataset_daVinci import get_valid_demo_start_end_indices
 from instructor.utils import center_crop_resize
 
@@ -86,7 +86,8 @@ def psm2_jaw_callback(data):
     
 # --------------- Utils function ---------------
 
-def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_name_file_suffix_dict, downsampling_shape, center_crop_flag, use_jaw_values_flag=True):
+def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_name_file_suffix_dict, downsampling_shape, center_crop_flag, 
+                                use_jaw_values_flag=True, phase_to_instruction_mapping=None):
     # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
        
     print("\nGenerating a random episode sequence...\n")
@@ -115,11 +116,12 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
         
         # Load the start and end indices for the current demo as the valid range of the demo
         selected_demo_folder_path = os.path.join(dataset_dir, selected_tissue_sample, phase_folder_name, selected_phase_demo_folder_name)
-        start_idx, end_idx = get_valid_demo_start_end_indices(selected_demo_folder_path, camera_names, before_phase_offset, after_phase_offset)
-        num_frames = end_idx - start_idx + 1
+        start_idx, end_idx, num_frames = get_valid_demo_start_end_indices(selected_demo_folder_path, camera_names, before_phase_offset, after_phase_offset)
         
         # Extract the phase command from the folder name (removing the phase idx and the "_" in between the words) 
         _, phase_instruction = phase_folder_name.split("_")[0], " ".join(phase_folder_name.split("_")[1:]) 
+        if phase_to_instruction_mapping:
+            phase_instruction = phase_to_instruction_mapping[phase_folder_name]
         episode_gt_instruction_sequence += [phase_instruction]*num_frames # Add the instruction for the current demo
         
         # Get the jaw values for the current demo
@@ -220,6 +222,35 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
             current_frames_transformed = random_episode_frame_sequence[frame_idx]  # Shape: cam, c, h, w
             return True, current_frames_transformed
     
+
+def apply_logits_lp_filter(last_n_logits, filter_mode="average", smoothing_factor=2):
+    # Apply a low pass filter on the logits (e.g., average, ema (exponential moving average), ...)
+    
+    if filter_mode == "average":
+        smoothed_logits = torch.mean(last_n_logits, dim=0).unsqueeze(0)
+        return smoothed_logits
+    elif filter_mode == "ema":
+        # Determine the smoothing period based on the length of last_n_logits
+        smoothing_period = len(last_n_logits)
+        
+        # Calculate alpha based on the smoothing period and smoothing factor
+        alpha = smoothing_factor / (1 + smoothing_period)
+        
+        # Initialize EMA with the first logit value
+        ema = last_n_logits[0]
+        
+        # Calculate EMA using the adjusted formula
+        for t in range(1, smoothing_period):
+            ema = (
+                last_n_logits[t] * alpha +
+                ema * (1 - alpha)
+            )
+        
+        smoothed_logits = ema.unsqueeze(0)
+        return smoothed_logits
+    else:
+        raise ValueError(f"Filter mode {filter_mode} is not implemented yet")
+
     
 def visualize_current_frames(current_frames, language_instruction_prediction, language_instruction_ground_truth=None, upscaling_factor=2, 
                              visualization_flag=True, current_jaw_values=None, phase_history=None):
@@ -246,11 +277,11 @@ def visualize_current_frames(current_frames, language_instruction_prediction, la
     # Add the jaw values to right side of the image
     if current_jaw_values is not None:
         jaw_text = f"Jaw values: PSM2: {current_jaw_values[1]:.2f}, PSM1: {current_jaw_values[0]:.2f}"
-        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500
+        jaw_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1]//3 + 100
         cv2.putText(current_frames_concatenated_bgr_upscaled, jaw_text, (jaw_text_position_x, 25), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     if phase_history is not None:
         phase_history_text = f"Phase history: {phase_history}"
-        phase_history_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1] - 500
+        phase_history_text_position_x = current_frames_concatenated_bgr_upscaled.shape[1]//3 + 100
         phase_history_text_position_y = 60 if current_jaw_values is not None else 25
         cv2.putText(current_frames_concatenated_bgr_upscaled, phase_history_text, (phase_history_text_position_x, phase_history_text_position_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     
@@ -289,15 +320,18 @@ def instructor_pipeline(args):
     # Define the output folder
     timestamp = datetime.now().strftime("%d_%m_%Y__%H_%M_%S")
     ckpt_name = os.path.basename(args.ckpt_path)
-    output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"tissue_{args.tissue_name}_{timestamp=}")
-    
+    if args.input_type == "random":
+        output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, f"{args.tissue_name}_{timestamp=}")
+    else:
+        output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, timestamp)
+        
     # Create the recordings folder if it does not exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
     
     # -------------- Initialize the instructor model --------------
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
     # Init instructor model + load parameters and weigths from checkpoint
     checkpoint = torch.load(args.ckpt_path)
@@ -316,9 +350,12 @@ def instructor_pipeline(args):
     use_phase_history_flag = checkpoint.use_phase_history_flag
     phase_history_len = checkpoint.phase_history_len
     use_transformer_flag = checkpoint.use_image_emb_transformer_flag
+    # TODO: Do this also for the other checkpoint parameters (for backward compatibility)
+    phase_to_instruction_mapping = checkpoint.phase_to_instruction_mapping if hasattr(checkpoint, "phase_to_instruction_mapping") else None
+    phase_history_only_phase_switches_flag = checkpoint.phase_history_only_phase_switches_flag if hasattr(checkpoint, "phase_history_only_phase_switches_flag") else False
     instructor_model = build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, 
                                         model_camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, 
-                                        use_phase_history_flag, phase_history_len, use_transformer_flag)  
+                                        use_phase_history_flag, phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag)  
     
     # Load the model weights
     instructor_model.load_state_dict(checkpoint.state_dict())    
@@ -367,7 +404,8 @@ def instructor_pipeline(args):
     
     if args.input_type == "random":
         # Generate a random episode
-        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, args.downsampling_shape, center_crop_flag) 
+        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
+                                                                                                                           args.downsampling_shape, center_crop_flag, use_jaw_values_flag, phase_to_instruction_mapping) 
     
         # Check if the gt instructions are within the learned instructions of the model
         gt_instructions_set = set(episode_gt_instruction_sequence)
@@ -392,9 +430,12 @@ def instructor_pipeline(args):
     if use_phase_history_flag:
         if not args.input_type == "live" or not args.starting_phase_idx:
             phase_history = [0]*phase_history_len 
+        # TODO: How to init for the new approach? Already set the phase history len based on the prediction step size?!
         else:
-            phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx-1)) + list(range(args.starting_phase_idx))[-phase_history_len:]
-            phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history]
+            # TODO: Add here the new version of the phase history - might move the initial prediction here instead of below
+            # TODO: Check how to init the phase history len here for the new approach?! Take the mean of the phase history len?
+            phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx)) + list(range(args.starting_phase_idx))[-phase_history_len:]
+            phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history if phase_idx != 0]
             print(f"Starting phase: {candidate_texts[args.starting_phase_idx-1]} - Phase history: {phase_history_commands}")
         model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
     else:
@@ -407,7 +448,11 @@ def instructor_pipeline(args):
     else:
         model_input_jaw_values_tensor = None
     
+    # Init output buffer
+    logits_buffer = deque(maxlen=args.low_pass_buffer_size)
+    
     frame_idx = 0
+    new_pred_flag = False
     while not exit_flag:
         with measure_execution_time("Total inference time", execution_times_dict):
             # -------------- Load current jaw values + camera frames --------------
@@ -451,12 +496,20 @@ def instructor_pipeline(args):
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
                     logits, temperature, predicted_embedding = instructor_model(model_input_frames_tensor, model_input_jaw_values_tensor, model_input_phase_history)
-                    print(f"\nFrame Idx: Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, phase history: {model_input_phase_history}")
+                    print(f"\nFrame Idx: {frame_idx} - Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, Phase history: {model_input_phase_history}")
                     if args.input_type == "live":
                         print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
+                    # Apply the low pass filter on the logits (if desired)
+                    if args.low_pass_buffer_size > 1:
+                        logits_buffer.append(logits)
+                        stacked_logits = torch.stack(list(logits_buffer)).squeeze(1)
+                        smoothed_logits = apply_logits_lp_filter(stacked_logits, filter_mode=args.lp_filter_mode, smoothing_factor=args.lp_ema_smoothing_factor) 
+                    else:
+                        smoothed_logits = logits
                     # Decode the model output to the language instruction
-                    predicted_instruction = instructor_model.decode_logits(logits, temperature)[0]
+                    predicted_instruction = instructor_model.decode_logits(smoothed_logits, temperature)[0]
                     instruction_pred_list.append(predicted_instruction)
+                    new_pred_flag = True
                     
                     # Publish the predicted language instruction
                     if args.input_type == "live": 
@@ -476,9 +529,9 @@ def instructor_pipeline(args):
                         instruction_gt_list.append(gt_instruction)
                         
                         if gt_instruction == predicted_instruction:
-                            print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction}")
+                            print(f"Frame Idx: {frame_idx} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction}")
                         else:
-                            print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction} - GT instruction: {gt_instruction} --> Wrong prediction")
+                            print(f"Frame Idx: {frame_idx} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction} --> Wrong prediction")
                         
                         # # TODO: Remove later again - debugging
                         # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
@@ -492,6 +545,7 @@ def instructor_pipeline(args):
                 starting_command_idx = 0 if not args.starting_phase_idx else args.starting_phase_idx - 1
                 predicted_instruction = candidate_texts[starting_command_idx]
                 predicted_embedding = candidate_embeddings[starting_command_idx]
+                new_pred_flag = True # Indicate that a new prediction was made (for the initial prediction) # TODO: Remove here?
                 if args.input_type == "random":
                     gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
             
@@ -501,7 +555,7 @@ def instructor_pipeline(args):
                     instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))      
             
             # Update the phase history list
-            if use_phase_history_flag:
+            if use_phase_history_flag and new_pred_flag:
                 predicted_instruction_idx = candidate_texts.index(predicted_instruction) + 1 # Because of padding index
                 # If the predicted instruction is different from the last instruction, add it to the phase history
                 if predicted_instruction_idx != phase_history[-1]:
@@ -509,6 +563,7 @@ def instructor_pipeline(args):
                     # Keep the phase history list at the desired length
                     phase_history = phase_history[1:]
                     model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
+                new_pred_flag = False # Reset the new prediction flag
             
             # -------------- Visualize the frame --------------
             
@@ -621,15 +676,27 @@ def parse_pipeline_args():
     # Prediction stride value to only predict every x frames
     parser.add_argument('--prediction_stride', type=int, default=30, help="Prediction stride value (e.g., predict every x frames)")
 
+    # TODO: Play around with which LP parameter work best
+    # Output low pass buffer size 
+    parser.add_argument('--low_pass_buffer_size', type=int, default=3, help="Low pass buffer size for the logits")
+
+    # Output low pass filter mode
+    parser.add_argument('--lp_filter_mode', type=str, default="ema", help="Low pass filter mode for the logits (e.g., average, ema)")
+
+    # Output low pass filter alpha value (for ema)
+    parser.add_argument('--lp_ema_smoothing_factor', type=float, default=2, help="Low pass filter smoothing factor for the logits (only for ema -> exponential moving average)")
+
+    # GPU to run inference on
+    parser.add_argument('--gpu', type=int, default=0, help="GPU id to use")
 
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="random",
+    parser.add_argument('--input_type', type=str, default="live",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
-    parser.add_argument('--downsampling_shape', type=tuple, default=(224, 224), help="Desired size of the input image")
+    parser.add_argument('--downsampling_shape', type=tuple, default=(224, 224), help="Desired size of the input image") # TODO: Get this from the model checkpoint (add into model checkpoint)
     
     # Camera name file suffix dict
     default_camera_name_file_suffix_dict = {"endo_psm2": "_psm2.jpg", "left_img_dir": "_left.jpg", "right_img_dir": "_right.jpg", "endo_psm1": "_psm1.jpg"}
@@ -654,7 +721,7 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_14"
+    default_tissue_sample = "tissue_13"
     parser.add_argument('--tissue_name', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
     
     

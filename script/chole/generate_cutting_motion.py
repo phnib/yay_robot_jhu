@@ -107,12 +107,10 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         for phase in phases:
 
-            dataset_path = f"/cis/home/sschmi46/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
             if not os.path.exists(dataset_path):
                 print(f"dataset path not found in {dataset_path}")
                 continue
-
-
             samples = os.listdir(dataset_path)
             for sample in samples:
                 sample_dir = os.path.join(dataset_path, sample)
@@ -132,7 +130,7 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         for phase in phases:
 
-            dataset_path = f"/cis/home/sschmi46/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
             if not os.path.exists(dataset_path):
                 print(f"dataset path not found in {dataset_path}")
                 continue
@@ -155,7 +153,7 @@ if __name__ == "__main__":
     for tissue_id in tissue_ids:
         for phase in phases:
 
-            dataset_path = f"/cis/home/sschmi46/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
+            dataset_path = f"/home/imerse/chole_ws/data/base_chole_clipping_cutting/tissue_{tissue_id}/{phase}"
             if not os.path.exists(dataset_path):
                 print(f"dataset path not found in {dataset_path}")
                 continue

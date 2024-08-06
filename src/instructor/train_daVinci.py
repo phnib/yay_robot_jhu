@@ -1,7 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/base_chole_clipping_cutting_clip_reduced_set     --batch_size 128     --num_epochs 15000     --lr 1e-4     --history_step_size 30    --prediction_offset 12     --history_len 3     --seed 3   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 5 --cameras_to_use left_img_dir endo_psm1 --backbone_model clip --model_init_weights dino --freeze_backbone_until all --reduced_base_class_set_flag --balanced_class_weights_flag
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/new_dataloader_proto_training_yay     --batch_size 16     --num_epochs 1000     --lr 4e-4 --weight_decay 0.05    --history_step_size 30    --prediction_offset 12     --history_len 1     --seed 4   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 2 --cameras_to_use endo_psm2 left_img_dir endo_psm1 --backbone_model clip --model_init_weights sda --freeze_backbone_until all --balanced_class_weights_flag --use_transformer_flag --gpu 0 --recovery_probability 0.2
 """
 
 import os
@@ -42,17 +42,30 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
     total_loss = 0.0
     for batch_idx, batch in enumerate(dataloader):
         # Get the data from the batch
-        images, _, commands, psm2_psm1_jaw_values, phase_history = batch # If not used then jaw values and phase history is None
+        if args.use_jaw_values_flag:
+            images, _, commands, psm2_psm1_jaw_values, phase_history = batch 
+        else:
+            images, _, commands, phase_history = batch
+            psm2_psm1_jaw_values = None
+    
+        # Prepare model input
         images = images.to(device)
-        if psm2_psm1_jaw_values is not None:
+        if args.use_jaw_values_flag:
             psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
-        if phase_history is not None:
+        if args.use_phase_history_flag:
             phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
             phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
 
         # Forward pass
         optimizer.zero_grad()
-        logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+        if args.use_jaw_values_flag and args.use_phase_history_flag:
+            logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+        elif args.use_jaw_values_flag:
+            logits, temperature, _ = model(images, psm2_psm1_jaw_values)
+        elif args.use_phase_history_flag:
+            logits, temperature, _ = model(images, phase_history_indexed)
+        else:
+            logits, temperature, _ = model(images)
 
         # Convert ground truth command strings to indices using the pre-computed dictionary
         commands_idx = torch.tensor([model.command_to_index[cmd] for cmd in commands], device=device)
@@ -67,8 +80,8 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
             wandb.log({"Train Loss": loss.item(), "Temperature": temperature.item()})
             
         # Save images from the last batch (to see, e.g., the augmentation applied)
+        saved_img_cnt = 0
         if batch_idx == len(dataloader) - 1:
-            saved_img_cnt = 0
             for img_idx in range(len(images)):
                 if saved_img_cnt >= max_num_images:
                     break
@@ -93,16 +106,29 @@ def evaluate(model, dataloader, criterion, device):
     with torch.no_grad():
         for batch in dataloader: 
             # Get the data from the batch
-            images, _, commands, psm2_psm1_jaw_values, phase_history = batch # If not used then jaw values and phase history is None
+            if args.use_jaw_values_flag:
+                images, _, commands, psm2_psm1_jaw_values, phase_history = batch 
+            else:
+                images, _, commands, phase_history = batch
+        
+            # Prepare model input
             images = images.to(device)
-            if psm2_psm1_jaw_values is not None:
+            if args.use_jaw_values_flag:
                 psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
-            if phase_history is not None:
+            if args.use_phase_history_flag:
                 phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
                 phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
-                
+
             # Forward pass
-            logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            optimizer.zero_grad()
+            if args.use_jaw_values_flag and args.use_phase_history_flag:
+                logits, temperature, _ = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            elif args.use_jaw_values_flag:
+                logits, temperature, _ = model(images, psm2_psm1_jaw_values)
+            elif args.use_phase_history_flag:
+                logits, temperature, _ = model(images, phase_history_indexed)
+            else:
+                logits, temperature, _ = model(images)
 
             # Convert ground truth command strings to indices using the pre-computed dictionary
             commands_idx = torch.tensor([model.command_to_index[cmd] for cmd in commands], device=device)
@@ -123,6 +149,7 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
 
     all_commands_gt = []
     all_decoded_texts = []
+    all_commands_last_pred = [] # To evaluate the phase transitions accuracy
 
     if not one_hot_flag:
         all_predicted_embeddings = []
@@ -133,46 +160,61 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             # Get the data from the batch
-            images, command_embedding_gt, command_gt, psm2_psm1_jaw_values, phase_history = batch
+            if args.use_jaw_values_flag:
+                images, command_embedding_gt, command_gt, psm2_psm1_jaw_values, phase_history = batch 
+            else:
+                images, command_embedding_gt, command_gt, phase_history = batch
+                psm2_psm1_jaw_values = None
+        
+            # Prepare model input
             images = images.to(device)
-            if psm2_psm1_jaw_values is not None:
+            if args.use_jaw_values_flag:
                 psm2_psm1_jaw_values = psm2_psm1_jaw_values.to(device)
-            if phase_history is not None:
+            if args.use_phase_history_flag:
                 phase_history_indexed = [[model.history_phase_to_index[phase_command_list[batch_idx]] for batch_idx in range(len(phase_command_list))] for phase_command_list in phase_history]
                 phase_history_indexed = torch.tensor(phase_history_indexed, device=device).transpose(0, 1)
 
-            # Forward pass
-            logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
-
+            # Forward pass + decode logits
+            optimizer.zero_grad()
+            if args.use_jaw_values_flag and args.use_phase_history_flag:
+                logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
+            elif args.use_jaw_values_flag:
+                logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values)
+            elif args.use_phase_history_flag:
+                logits, temperature, predicted_embedding = model(images, phase_history_indexed)
+            else:
+                logits, temperature, _ = model(images)
             decoded_texts = model.decode_logits(logits, temperature) 
 
             # Store the ground truth and predicted commands for the confusion matrix
             all_commands_gt.extend(command_gt)
             all_decoded_texts.extend(decoded_texts)
-
+            # Store the last predicted command for the phase transitions
+            all_commands_last_pred.extend(phase_history[-1])
+            
             if not one_hot_flag:
                 all_predicted_embeddings.extend(predicted_embedding.cpu().numpy())
                 all_gt_embeddings.extend(command_embedding_gt.cpu().numpy())
 
             if plot_images_flag and (incorrect_img_cnt < max_num_images or correct_img_cnt < max_num_images):
                 rnd_indices = list(torch.randperm(len(images))) # Randomly shuffle the indices - to get random images
-                for img_idx, rnd_idx in enumerate(rnd_indices):            
-                    gt, pred = command_gt[rnd_idx], decoded_texts[rnd_idx]
+                for rnd_image_idx in rnd_indices:            
+                    gt, pred = command_gt[rnd_image_idx], decoded_texts[rnd_image_idx]
                     
                     # Save incorrect prediction
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
-                        save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                        save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{rnd_image_idx}.jpg")
+                        log_combined_image(images[rnd_image_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                         if args.log_wandb:
-                            wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+                            wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {rnd_image_idx}")})
                     # Save correct prediction
                     if pred == gt and correct_img_cnt < max_num_images:
                         correct_img_cnt += 1
-                        save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{img_idx}.jpg")
-                        log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                        save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{rnd_image_idx}.jpg")
+                        log_combined_image(images[rnd_image_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
                         if args.log_wandb:
-                            wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
+                            wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {rnd_image_idx}")})
                 
     # Visualize embeddings
     if not one_hot_flag:
@@ -192,20 +234,42 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
     
     # Compute metrics 
     logger.info("")
-    # Compute the success rate -> accurarcy
-    accurarcy_curr_epoch = accuracy_score(all_commands_gt, all_decoded_texts)
+    compute_metrics(current_epoch, all_commands_gt, all_decoded_texts, all_commands_last_pred, args, logger)
+    
+# ----------------------------
+
+def compute_metrics(current_epoch, all_commands_gt, all_decoded_texts, all_commands_last_pred, args, logger):
+    # Compute the success rate -> accuracy
+    accuracy_curr_epoch = accuracy_score(all_commands_gt, all_decoded_texts)
     if args.log_wandb:
-        wandb.log({f"Accurarcy": accurarcy_curr_epoch})
+        wandb.log({"Accuracy": accuracy_curr_epoch})
         
     # Compute the (macro) F1 score
     f1_score_curr_epoch = f1_score(all_commands_gt, all_decoded_texts, average='macro')
     if args.log_wandb:
-        wandb.log({f"F1 Score": f1_score_curr_epoch})
+        wandb.log({"F1 Score": f1_score_curr_epoch})
+        
+    logger.info(f"Epoch {current_epoch}: Accuracy = {accuracy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+        
+    # ---------- Metrics at phase transitions (so only where gt != last pred) ----------
     
-    logger.info(f"Epoch {current_epoch}: Accuracy = {accurarcy_curr_epoch * 100:.2f}% - F1 Score = {f1_score_curr_epoch * 100:.2f}%")
+    # Keep only the transition inputs
+    transition_filter = [gt != pred for gt, pred in zip(all_commands_gt, all_commands_last_pred)]
+    all_commands_gt_filtered = [gt for gt, filter_val in zip(all_commands_gt, transition_filter) if filter_val]
+    all_decoded_texts_filtered = [pred for pred, filter_val in zip(all_decoded_texts, transition_filter) if filter_val]
+    
+    # Compute the success rate -> accuracy
+    accuracy_curr_epoch_transitions = accuracy_score(all_commands_gt_filtered, all_decoded_texts_filtered)
+    if args.log_wandb:
+        wandb.log({"Accuracy (at transitions)": accuracy_curr_epoch_transitions})
+    
+    # Compute the (macro) F1 score
+    f1_score_curr_epoch_transitions = f1_score(all_commands_gt_filtered, all_decoded_texts_filtered, average='macro')
+    if args.log_wandb:
+        wandb.log({"F1 Score (at transitions)": f1_score_curr_epoch_transitions})
 
+    logger.info(f"Epoch {current_epoch}: Accuracy (at transitions) = {accuracy_curr_epoch_transitions * 100:.2f}% - F1 Score (at transitions) = {f1_score_curr_epoch_transitions * 100:.2f}%")
 
-# ----------------------------
 
 def log_combined_image(images, gt_text, pred_text, psm2_psm1_jaw_values=None, camera_names=None, save_path=None):
 
@@ -365,7 +429,7 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, 
                      center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
-                     phase_history_len, use_transformer_flag):
+                     phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -389,6 +453,8 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         use_phase_history_flag=use_phase_history_flag,
         phase_history_len=phase_history_len,
         use_image_emb_transformer_flag=use_transformer_flag,
+        phase_to_instruction_mapping=phase_to_instruction_mapping,
+        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag
     ).to(device)
     return model
 
@@ -479,6 +545,8 @@ if __name__ == "__main__":
     parser.add_argument('--phase_history_len', action='store', type=int, help='phases_history_len', default=6)
     parser.add_argument('--use_transformer_flag', action='store_true', help='Use a transformer model instead of a linear layer')
     parser.add_argument('--prediction_step_size', action='store', type=int, help='prediction_step_size (in number of frames)', default=30)
+    parser.add_argument('--recovery_probability', action='store', type=float, help='recovery_probability', default=0.2)
+    parser.add_argument('--phase_history_only_phase_switches_flag', action='store_true', help='Use only the phase switches in the history')    
     # TODO: Decide later here on the augmentation mode used
     
     args = parser.parse_args()
@@ -558,7 +626,9 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
-            prediction_step_size=args.prediction_step_size
+            prediction_step_size=args.prediction_step_size,
+            recovery_probability=args.recovery_probability,
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -579,9 +649,12 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
-            prediction_step_size=args.prediction_step_size
+            prediction_step_size=args.prediction_step_size,
+            recovery_probability=args.recovery_probability,
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
         )
     else:
+        # TODO: Move this after loading the ckpt and take the metadata from the checkpoint for init the dataloader - also regarding which gallbladders to eval on
         test_dataloader, ds_metadata_dict = load_merged_data(
             dataset_dirs=dataset_dirs,
             num_episodes_list=num_episodes_list,
@@ -600,7 +673,9 @@ if __name__ == "__main__":
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
-            prediction_step_size=args.prediction_step_size
+            prediction_step_size=args.prediction_step_size,
+            recovery_probability=args.recovery_probability,
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -641,12 +716,17 @@ if __name__ == "__main__":
     # Build the model
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]  
+    if args.reduced_base_class_set_flag:
+        phase_to_instruction_mapping = ds_metadata_dict["phase_to_instruction_mapping"]
+    else:
+        phase_to_instruction_mapping = None
+        
     logger.info(f"\nLanguage instructions: {candidate_texts}\n")  
     model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until,
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
-                             args.use_transformer_flag)
+                             args.use_transformer_flag, phase_to_instruction_mapping, args.phase_history_only_phase_switches_flag)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Add cosine annealing learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)
@@ -689,7 +769,7 @@ if __name__ == "__main__":
     if args.test_only_flag:
         latest_idx = next_idx-1
         test(model, test_dataloader, "test", device, latest_idx, args.one_hot_flag, args.ckpt_dir, 
-             log_wandb_flag=args.log_wandb)
+             log_wandb_flag=args.log_wandb, max_num_images=args.max_num_images)
         exit()
 
     # Training loop
@@ -700,14 +780,14 @@ if __name__ == "__main__":
         if args.log_wandb:
             wandb.log({"Epoch": epoch})
         
-        train_loss = train(model, train_dataloader, optimizer, criterion, device, args.ckpt_dir, epoch, args.max_num_images)
+        train_loss = train(model, train_dataloader, optimizer, criterion, device, args.ckpt_dir, epoch, max_num_images=args.max_num_images)
         if args.dagger_ratio is None: 
             val_loss = evaluate(model, val_dataloader, criterion, device)
             
             # Test the model and log success rate every 200 epochs
             if (epoch + 1) % args.validation_interval == 0:
                 test(model, val_dataloader, "val", device, epoch, args.one_hot_flag, args.ckpt_dir, plot_images_flag=args.plot_val_images_flag, 
-                     log_wandb_flag=args.log_wandb)
+                     log_wandb_flag=args.log_wandb, max_num_images=args.max_num_images)
 
         pbar_epochs.set_postfix({"Train Loss": train_loss, "Val Loss": val_loss if args.dagger_ratio is None else None})
         # Log the losses locally
