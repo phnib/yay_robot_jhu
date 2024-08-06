@@ -186,6 +186,9 @@ class SequenceDataset(torch.utils.data.Dataset):
             tissue_sample_dir_path = os.path.join(dataset_dir, tissue_sample_name)
             phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name)) and file_name.split('_')[0].isdigit()]
             phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
+            # Exclude grabbing gallbladder tissues (so tissues where grabbing gallbladder is not containing both grab and pull)
+            if tissue_sample_name in dataset_config["exclude_grabbing_gallbladder_tissues"]:
+                phases_ordered = [phase for phase in phases_ordered if int(phase.split("_")[0]) != 1]
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases_ordered:
                 files_in_phase_folder = os.listdir(os.path.join(tissue_sample_dir_path, phase_sample))
@@ -843,7 +846,7 @@ if __name__ == "__main__":
     # Parameters for the test
     dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging"
     dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) 
-    tissue_samples_ids = ["tissue_18"] # "phantom_1" "tissue_12"
+    tissue_samples_ids = ["tissue_14"] # "phantom_1" "tissue_12"
     camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
     camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
     history_len = 3
