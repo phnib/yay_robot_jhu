@@ -43,7 +43,10 @@ class Instructor(nn.Module):
         history_output_dim=256,
         use_image_emb_transformer_flag=False,
         phase_to_instruction_mapping=None,
-        phase_history_only_phase_switches_flag=False
+        phase_history_only_phase_switches_flag=False,
+        camera_dropout_prob=0.1,
+        jaw_values_dropout_prob=0.1,
+        phase_history_dropout_prob=0.1
     ):
         super().__init__()
 
@@ -149,6 +152,11 @@ class Instructor(nn.Module):
         self.phase_to_instruction_mapping = phase_to_instruction_mapping
         self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
 
+        # Dropout probabilities
+        self.camera_dropout_prob = camera_dropout_prob
+        self.jaw_values_dropout_prob = jaw_values_dropout_prob
+        self.phase_history_dropout_prob = phase_history_dropout_prob
+
         total, trainable = count_parameters(self)
         print(f"Total parameters: {total / 1e6:.2f}M")
         print(f"Trainable parameters: {trainable / 1e6:.2f}M")
@@ -160,6 +168,12 @@ class Instructor(nn.Module):
         
         # Given images of shape (b, t, k, c, h, w)
         batch_size, timesteps, num_cameras, c, h, w = images.shape
+
+        # Apply camera dropout
+        if self.training:
+            camera_dropout_mask = torch.bernoulli(torch.ones(batch_size, num_cameras, device=self.device) * (1 - self.camera_dropout_prob))
+            camera_dropout_mask = camera_dropout_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            images = images * camera_dropout_mask
 
         # Check if padding is required
         if timesteps < self.history_len + 1:
@@ -204,7 +218,12 @@ class Instructor(nn.Module):
 
         # Process the jaw values (if available)
         if self.use_jaw_values_flag:
+            # Apply jaw values dropout
+            if self.training:
+                jaw_input_dropout_mask = torch.bernoulli(torch.ones((batch_size, 1, 2), device=self.device) * (1 - self.jaw_values_dropout_prob))
+                psm2_psm1_jaw_values = psm2_psm1_jaw_values * jaw_input_dropout_mask
             psm2_psm1_jaw_values_flattened = psm2_psm1_jaw_values.reshape(batch_size, -1) # Flatten the jaw values: (batch_size, timesteps, 2) -> (batch_size, timesteps*2)
+            
             psm2_psm1_jaw_values_features = self.jaw_values_mlp(psm2_psm1_jaw_values_flattened)
             psm2_psm1_jaw_values_image_features = torch.cat((final_image_output, psm2_psm1_jaw_values_features), dim=1)
             final_output = self.image_jaw_mlp(psm2_psm1_jaw_values_image_features)          
@@ -213,6 +232,11 @@ class Instructor(nn.Module):
 
         # Process the phase history (if available)
         if self.use_phase_history_flag:
+            # Apply phase history dropout
+            if self.training:
+                phase_history_dropout_mask = torch.bernoulli(torch.ones((batch_size, 1), device=self.device) * (1 - self.phase_history_dropout_prob))
+                phase_history = (phase_history * phase_history_dropout_mask).to(torch.int64)
+            
             phase_history_embeddings = self.phase_embedding(phase_history)
             phase_history_embeddings_reshaped = phase_history_embeddings.reshape(batch_size, -1)
             phase_history_output = self.history_mlp(phase_history_embeddings_reshaped)
@@ -347,7 +371,7 @@ if __name__ == "__main__":
     tissue_samples_ids = [1]
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-    history_len = 2
+    history_len = 5
     prediction_offset = 0 # Get command for the current timestep
     history_step_size = 30
     num_episodes = 200 # Number of randlomy generated stitched episodes
@@ -363,6 +387,7 @@ if __name__ == "__main__":
     prediction_step_size = 30
     recovery_probability = 0.4
     phase_history_only_phase_switches_flag = False
+    camera_dropout_prob = jaw_values_dropout_prob = phase_history_dropout_prob=0.4
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     input_transforms = []
@@ -391,8 +416,8 @@ if __name__ == "__main__":
     num_episodes_list = [200]*len(datasets_dir)
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-    batch_size_train = 2
-    batch_size_val = 2
+    batch_size_train = 16
+    batch_size_val = 16
 
     # Load the dataloader
     train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -438,7 +463,12 @@ if __name__ == "__main__":
         use_image_emb_transformer_flag=use_transformer_flag,
         one_hot_flag=one_hot_flag,
         backbone_model_name=backbone_model_name,
-        model_init_weights=model_init_weights,        
+        model_init_weights=model_init_weights,
+        phase_history_len=phase_history_len,
+        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
+        camera_dropout_prob=camera_dropout_prob,
+        jaw_values_dropout_prob=jaw_values_dropout_prob,
+        phase_history_dropout_prob=phase_history_dropout_prob
     )
     model.to(device)
 

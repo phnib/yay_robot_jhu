@@ -1,7 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/new_dataloader_proto_training_yay     --batch_size 16     --num_epochs 1000     --lr 4e-4 --weight_decay 0.05    --history_step_size 30    --prediction_offset 12     --history_len 1     --seed 4   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 2 --cameras_to_use endo_psm2 left_img_dir endo_psm1 --backbone_model clip --model_init_weights sda --freeze_backbone_until all --balanced_class_weights_flag --use_transformer_flag --gpu 0 --recovery_probability 0.2
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/all_data_jaw     --batch_size 128     --num_epochs 2000     --lr 4e-4 --weight_decay 0.05    --history_step_size 15    --prediction_offset 12     --history_len 3     --seed 4   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 2 --cameras_to_use endo_psm2 left_img_dir endo_psm1 --backbone_model clip --model_init_weights sda --freeze_backbone_until all --use_transformer_flag --gpu 0 --recovery_probability 0.5 --use_jaw_values_flag --camera_dropout_prob 0.2 --jaw_values_dropout_prob 0.2 --phase_history_dropout_prob 0.2
 """
 
 import os
@@ -81,7 +81,8 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
             
         # Save images from the last batch (to see, e.g., the augmentation applied)
         saved_img_cnt = 0
-        if batch_idx == len(dataloader) - 1:
+        rnd_batch_idx = np.random.randint(0, len(dataloader))
+        if batch_idx == rnd_batch_idx:
             for img_idx in range(len(images)):
                 if saved_img_cnt >= max_num_images:
                     break
@@ -429,7 +430,8 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, 
                      center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
-                     phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag):
+                     phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag,
+                     camera_dropout_prob=0.2, jaw_values_dropout_prob=0.2, phase_history_dropout_prob=0.2):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -454,7 +456,10 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         phase_history_len=phase_history_len,
         use_image_emb_transformer_flag=use_transformer_flag,
         phase_to_instruction_mapping=phase_to_instruction_mapping,
-        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag
+        phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
+        camera_dropout_prob=camera_dropout_prob,
+        jaw_values_dropout_prob=jaw_values_dropout_prob,
+        phase_history_dropout_prob=phase_history_dropout_prob
     ).to(device)
     return model
 
@@ -531,7 +536,7 @@ if __name__ == "__main__":
     parser.add_argument('--center_crop_flag', action='store_true', help='Center crop the images during preprocessing, preventing unnatural rescaling, but potentially cutting off important information')
     parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
     parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=2)
-    parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"])
+    parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "endo_psm1"]) # "right_img_dir"
     parser.add_argument('--reduced_base_class_set_flag', action='store_true', help='Use a reduced set of base classes')
     parser.add_argument('--backbone_model_name', action='store', type=str, help='backbone_model_name', default="clip")
     # gsvit - possible weights: general | cholecystectomy | imagenet
@@ -546,7 +551,10 @@ if __name__ == "__main__":
     parser.add_argument('--use_transformer_flag', action='store_true', help='Use a transformer model instead of a linear layer')
     parser.add_argument('--prediction_step_size', action='store', type=int, help='prediction_step_size (in number of frames)', default=30)
     parser.add_argument('--recovery_probability', action='store', type=float, help='recovery_probability', default=0.2)
-    parser.add_argument('--phase_history_only_phase_switches_flag', action='store_true', help='Use only the phase switches in the history')    
+    parser.add_argument('--phase_history_only_phase_switches_flag', action='store_true', help='Use only the phase switches in the history')
+    parser.add_argument('--camera_dropout_prob', action='store', type=float, help='camera_dropout_prob', default=0.2)
+    parser.add_argument('--jaw_values_dropout_prob', action='store', type=float, help='jaw_values_dropout_prob', default=0.2)
+    parser.add_argument('--phase_history_dropout_prob', action='store', type=float, help='phase_history_dropout_prob', default=0.2)
     # TODO: Decide later here on the augmentation mode used
     
     args = parser.parse_args()
@@ -726,7 +734,9 @@ if __name__ == "__main__":
                              candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
                              args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until,
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
-                             args.use_transformer_flag, phase_to_instruction_mapping, args.phase_history_only_phase_switches_flag)
+                             args.use_transformer_flag, phase_to_instruction_mapping, args.phase_history_only_phase_switches_flag,
+                             camera_dropout_prob=args.camera_dropout_prob, jaw_values_dropout_prob=args.jaw_values_dropout_prob, 
+                             phase_history_dropout_prob=args.phase_history_dropout_prob)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Add cosine annealing learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)
