@@ -291,8 +291,12 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         self.is_sim = None
         self.cutting_action_pad_size = task_config['cutting_action_pad_size']
         self.img_height, self.img_width = [360, 480]
+        # self.img_height, self.img_width = [224, 224]
         self.num_samples = task_config['num_episodes']
-        self.merging_subtasks = task_config['merging_subtasks']
+        if task_config.get('merging_subtasks'):
+            self.merging_subtasks = task_config['merging_subtasks']
+        else:
+            self.merging_subtasks = False
         if self.merging_subtasks:
             if task_config.get('available_phase_commands'):
                 self.available_phase_commands = task_config['available_phase_commands']
@@ -474,6 +478,30 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         r_actions = R.from_quat(quat_actions)
         # find their diff
         diff_rs = r_init.inv()*r_actions 
+        # extract their first two columns
+        diff_6d = diff_rs.as_matrix()[:,:,:2]
+        diff_6d = diff_6d.transpose(0,2,1).reshape(-1, 6) # first column then second column
+        
+        diff_expand = np.zeros((diff.shape[0], 10)) # TODO: hard-coded dim (10) for a single arm
+        diff_expand[:diff.shape[0], 0:diff.shape[1]] = diff 
+        diff = diff_expand
+
+        diff[:, 3:9] = diff_6d
+        diff[:, 9] = action[:, -1] # fill in the jaw angle (note: jaw angle is not relative)
+        return diff
+    
+    def compute_diff_actions_relative_endoscope(self, qpos, action):
+        """
+        qpos: current position [9]
+        action: actions commanded by the user [n_actions x 9]
+        returns: relative actions w.r.t qpos
+        """
+        # find diff first and then fill-in the quaternion differences properly
+        diff = action - qpos
+        quat_actions = action[:, 3:7]
+
+        r_actions = R.from_quat(quat_actions)
+        diff_rs = r_actions 
         # extract their first two columns
         diff_6d = diff_rs.as_matrix()[:,:,:2]
         diff_6d = diff_6d.transpose(0,2,1).reshape(-1, 6) # first column then second column
@@ -669,6 +697,9 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         qpos_psm2 = csv[self.header_name_qpos_psm2].iloc[start_ts, :].to_numpy()
         action_psm2 = csv[self.header_name_actions_psm2].iloc[start_ts:start_ts+400].to_numpy() # note 400 added here
     
+        # get current endoscope pose
+        ecm_pos = csv[self.header_ecm].iloc[start_ts, :].to_numpy()
+
         diff_psm1 = None
         diff_psm2 = None
 
@@ -679,6 +710,10 @@ class EpisodicDatasetDvrkGeneric(torch.utils.data.Dataset):
         elif self.action_mode == 'ego':
             diff_psm1 = self.compute_relative_actions_in_SE3(qpos_psm1, action_psm1)
             diff_psm2 = self.compute_relative_actions_in_SE3(qpos_psm2, action_psm2)
+        elif self.action_mode == 'relative_endoscope':
+            diff_psm1 = self.compute_diff_actions_relative_endoscope(qpos_psm1, action_psm1)
+            diff_psm2 = self.compute_diff_actions_relative_endoscope(qpos_psm2, action_psm2)
+
         else:
             raise(NotImplementedError) 
 
