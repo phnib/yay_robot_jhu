@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import pandas as pd
+import seaborn as sns
+
 from natsort import natsorted
 from scipy.spatial.transform import Rotation as R
 from pytransform3d import rotations, batch_rotations, transformations, trajectories
@@ -41,6 +43,70 @@ def compute_relative_actions_in_SE3(qpos, action):
     # fill in jaw angle (note: jaw angle is absolute, not relative)
     diff[:, 9] = action[:, 7]
     return diff
+
+def compute_quat_diff(quat1, quat2):
+    r1 = R.from_quat(quat1) # single element
+    r2 = R.from_quat(quat2) # many rows of elements
+    diff = r1.inv()*r2
+    diff = diff.as_quat()
+    return diff
+
+def computer_diff_actions(qpos, action):
+
+    """
+    qpos: current position (measured_cp), xyz, xyzw, jaw angle (8-dim vector)
+    action: set point on the dvrk (action_horizon x 8)
+    
+    returns: relative position and rotation w.r.t qpos
+    """
+
+    # find diff first and then fill-in the quaternion differences properly
+    diff = action - qpos
+
+    quat_init = qpos[3:7]
+    quat_actions = action[:, 3:7]
+
+    # convert quaternions to rotation matrices
+    r_init = R.from_quat(quat_init)
+    r_actions = R.from_quat(quat_actions)
+    # find their diff
+    diff_rs = r_init.inv()*r_actions 
+    # extract their first two columns
+    diff_6d = diff_rs.as_matrix()[:,:,:2]
+    diff_6d = diff_6d.transpose(0,2,1).reshape(-1, 6) # first column then second column
+    
+    diff_exp = np.zeros((diff.shape[0], 10)) # TODO: hard-coded dim (10) for a single arm
+    diff_exp[:diff.shape[0], 0:diff.shape[1]] = diff
+    diff = diff_exp
+
+    diff[:, 3:9] = diff_6d
+    diff[:, 9] = action[:, -1] # fill in the jaw angle (note: jaw angle is not relative)
+    return diff
+
+def compute_diff_actions_wrt_camera(qpos, action):
+        """
+        qpos: current position [9]
+        action: actions commanded by the user [n_actions x 9]
+        returns: relative actions w.r.t qpos
+        """
+        # find diff first and then fill-in the quaternion differences properly
+        diff = action - qpos
+        quat_actions = action[:, 3:7]
+
+        # convert quaternions to rotation matrices
+        r_actions = R.from_quat(quat_actions)
+
+        # extract their first two columns
+        diff_6d = r_actions.as_matrix()[:,:,:2]
+        diff_6d = diff_6d.transpose(0,2,1).reshape(-1, 6) # first column then second column
+        
+        diff_exp = np.zeros((diff.shape[0], 10)) # TODO: hard-coded dim (10) for a single arm
+        diff_exp[:diff.shape[0], 0:diff.shape[1]] = diff 
+        diff = diff_exp
+
+        diff[:, 3:9] = diff_6d
+        diff[:, 9] = action[:, -1] # fill in the jaw angle (note: jaw angle is not relative)
+        return diff    
 
 def compute_diffs(ids, data_dir, chunk_size=100, phantoms=False):
     cp_psm1 = [ "psm1_pose.position.x", "psm1_pose.position.y", "psm1_pose.position.z",
@@ -111,11 +177,11 @@ def compute_diffs(ids, data_dir, chunk_size=100, phantoms=False):
                     
                     first_el_psm1 = csv[cp_psm1].iloc[jj, :].to_numpy()
                     chunk_el_psm1 = csv[sp_psm1].iloc[jj:jj+chunk_size, :].to_numpy()
-                    diff_psm1 = compute_relative_actions_in_SE3(first_el_psm1, chunk_el_psm1)
+                    diff_psm1 = computer_diff_actions(first_el_psm1, chunk_el_psm1)
                     
                     first_el_psm2 = csv[cp_psm2].iloc[jj, :].to_numpy()
                     chunk_el_psm2 = csv[sp_psm2].iloc[jj:jj+chunk_size, :].to_numpy()
-                    diff_psm2 = compute_relative_actions_in_SE3(first_el_psm2, chunk_el_psm2)
+                    diff_psm2 = computer_diff_actions(first_el_psm2, chunk_el_psm2)
 
                     diff_stacked = np.column_stack((diff_psm1, diff_psm2))
                     diffs.append(diff_stacked)
@@ -153,7 +219,7 @@ def generate_task_config():
     print("max:", max_str)
 
     # write the results into a txt file
-    with open("./std_mean.txt", "w") as f:
+    with open("./std_mean_hybrid.txt", "w") as f:
         f.write(f"tissue ids: {ids}\n")
         f.write(f"mean: {mean_str}\n")
         f.write(f"std: {std_str}\n")
