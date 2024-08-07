@@ -1,7 +1,7 @@
 """
 Example usage:
 
-python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/all_data_jaw     --batch_size 128     --num_epochs 2000     --lr 4e-4 --weight_decay 0.05    --history_step_size 15    --prediction_offset 12     --history_len 3     --seed 4   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 2 --cameras_to_use endo_psm2 left_img_dir endo_psm1 --backbone_model clip --model_init_weights sda --freeze_backbone_until all --use_transformer_flag --gpu 0 --recovery_probability 0.5 --use_jaw_values_flag --camera_dropout_prob 0.2 --jaw_values_dropout_prob 0.2 --phase_history_dropout_prob 0.2
+python src/instructor/train_daVinci.py     --dataset_name base_chole_clipping_cutting      --ckpt_dir $YOUR_CKPT_PATH/hl/all_data_jaw     --batch_size 128     --num_epochs 2000     --lr 4e-4 --weight_decay 0.05    --history_step_size 15    --prediction_offset 12     --history_len 3     --seed 4   --load_best_ckpt_flag --one_hot_flag --plot_val_images_flag --max_num_images 2 --cameras_to_use endo_psm2 left_img_dir endo_psm1 --backbone_model clip --model_init_weights sda --freeze_backbone_until all --use_transformer_flag --gpu 0 --recovery_probability 0.5 --use_jaw_values_flag --use_phase_history_flag --phase_history_len 1 --phase_history_only_phase_switches_flag --prediction_step_size 30 --camera_dropout_prob 0.2 --jaw_values_dropout_prob 0.2 --phase_history_dropout_prob 0.1
 """
 
 import os
@@ -428,10 +428,10 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 
 # -----------------------------
 
-def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names, 
-                     center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
+def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names,
+                     backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
                      phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag,
-                     camera_dropout_prob=0.2, jaw_values_dropout_prob=0.2, phase_history_dropout_prob=0.2):
+                     camera_dropout_prob=0.2, jaw_values_dropout_prob=0.2, phase_history_dropout_prob=0.2, image_dim=(224, 224)):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -447,7 +447,6 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         command_to_index=command_to_index,
         one_hot_flag=one_hot_flag,
         camera_names=camera_names,
-        center_crop_flag=center_crop_flag,
         backbone_model_name=backbone_model_name,
         model_init_weights=model_init_weights,
         freeze_backbone_until=freeze_backbone_until,
@@ -459,7 +458,8 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
         camera_dropout_prob=camera_dropout_prob,
         jaw_values_dropout_prob=jaw_values_dropout_prob,
-        phase_history_dropout_prob=phase_history_dropout_prob
+        phase_history_dropout_prob=phase_history_dropout_prob,
+        image_dim=image_dim
     ).to(device)
     return model
 
@@ -533,7 +533,6 @@ if __name__ == "__main__":
     parser.add_argument('--save_ckpt_interval', action='store', type=int, help='save_ckpt_interval', default=100)
     parser.add_argument('--early_stopping_interval', action='store', type=int, help='early_stopping_interval', default=None)
     parser.add_argument('--load_best_ckpt_flag', action='store_true', help='Use the best checkpoint based on the validation loss if continue training on available checkpoint')
-    parser.add_argument('--center_crop_flag', action='store_true', help='Center crop the images during preprocessing, preventing unnatural rescaling, but potentially cutting off important information')
     parser.add_argument('--plot_val_images_flag', action='store_true', help='Plot images for correct and incorrect predictions')
     parser.add_argument('--max_num_images', action='store', type=int, help='Maximum number of images to plot for correct and incorrect predictions', default=2)
     parser.add_argument('--cameras_to_use', nargs='+', type=str, help='List of camera names to use', default=["endo_psm2", "left_img_dir", "endo_psm1"]) # "right_img_dir"
@@ -555,6 +554,7 @@ if __name__ == "__main__":
     parser.add_argument('--camera_dropout_prob', action='store', type=float, help='camera_dropout_prob', default=0.2)
     parser.add_argument('--jaw_values_dropout_prob', action='store', type=float, help='jaw_values_dropout_prob', default=0.2)
     parser.add_argument('--phase_history_dropout_prob', action='store', type=float, help='phase_history_dropout_prob', default=0.2)
+    parser.add_argument('--image_dim', nargs='+', type=int, help='image_dim', default=[224, 224])
     # TODO: Decide later here on the augmentation mode used
     
     args = parser.parse_args()
@@ -602,14 +602,14 @@ if __name__ == "__main__":
     # Note: Manual augmentations
     # input_transforms.append(transforms.RandomRotation(15))
     # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # input_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    # input_transforms.append(transforms.RandomResizedCrop(image_dim, scale=(0.8, 1.0)))
     
     # input_transforms.append(transforms.RandomApply([transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)], p=0.75))
     # input_transforms.append(v2.RandomPerspective(p=0.5))
     # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
     # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # input_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(224, scale=(0.5, 1.0))]))
+    # input_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(image_dim, scale=(0.5, 1.0))]))
     # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # input_transforms.append(transforms.RandomGrayscale(p=0.2))
     input_transforms = transforms.Compose(input_transforms)
@@ -629,14 +629,14 @@ if __name__ == "__main__":
             test_only=args.test_only_flag,
             input_transforms=input_transforms,
             dagger_ratio=args.dagger_ratio,
-            center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
             prediction_step_size=args.prediction_step_size,
             recovery_probability=args.recovery_probability,
-            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag,
+            image_dim=args.image_dim
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -652,14 +652,14 @@ if __name__ == "__main__":
             test_only=args.test_only_flag,
             input_transforms=input_transforms,
             dagger_ratio=args.dagger_ratio,
-            center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
             prediction_step_size=args.prediction_step_size,
             recovery_probability=args.recovery_probability,
-            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag,
+            image_dim=args.image_dim
         )
     else:
         # TODO: Move this after loading the ckpt and take the metadata from the checkpoint for init the dataloader - also regarding which gallbladders to eval on
@@ -676,14 +676,14 @@ if __name__ == "__main__":
             test_only=args.test_only_flag,
             input_transforms=input_transforms,
             dagger_ratio=args.dagger_ratio,
-            center_crop_flag=args.center_crop_flag,
             reduced_base_class_set_flag=args.reduced_base_class_set_flag,
             use_phase_history_flag=args.use_phase_history_flag,
             phase_history_len=args.phase_history_len,
             use_jaw_values_flag=args.use_jaw_values_flag,
             prediction_step_size=args.prediction_step_size,
             recovery_probability=args.recovery_probability,
-            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag
+            phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag,
+            image_dim=args.image_dim
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -731,12 +731,12 @@ if __name__ == "__main__":
         
     logger.info(f"\nLanguage instructions: {candidate_texts}\n")  
     model = build_instructor(args.history_len, args.history_step_size, args.prediction_offset, candidate_embeddings, 
-                             candidate_texts, device, args.one_hot_flag, camera_names, args.center_crop_flag,
-                             args.backbone_model_name, args.model_init_weights, args.freeze_backbone_until,
+                             candidate_texts, device, args.one_hot_flag, camera_names, args.backbone_model_name,
+                             args.model_init_weights, args.freeze_backbone_until,
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
                              args.use_transformer_flag, phase_to_instruction_mapping, args.phase_history_only_phase_switches_flag,
                              camera_dropout_prob=args.camera_dropout_prob, jaw_values_dropout_prob=args.jaw_values_dropout_prob, 
-                             phase_history_dropout_prob=args.phase_history_dropout_prob)
+                             phase_history_dropout_prob=args.phase_history_dropout_prob, image_dim=args.image_dim)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Add cosine annealing learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)

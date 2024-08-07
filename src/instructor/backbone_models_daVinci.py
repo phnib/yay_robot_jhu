@@ -243,7 +243,6 @@ def preprocess_inputs_clip(images):
     
     clip_transform = T.Compose(
         [
-            # transforms.Resize((224, 224)), already done in dataset (more performant)
             T.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)), # Note: same normalization in SDA-CLIP used
         ]
     )

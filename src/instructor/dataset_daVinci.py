@@ -21,7 +21,6 @@ if path_to_yay_robot:
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
-from instructor.utils import center_crop_resize
 from instructor.constants_daVinci import DATASET_CONFIGS # get task parameters
 from instructor.utils import DAggerSampler, randintgaussian
     
@@ -135,7 +134,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         history_step_size=30,
         num_episodes=200,
         input_transforms=None,
-        center_crop_flag=False,
         reduced_base_class_set_flag=False,
         use_phase_history_flag=False,
         use_jaw_values_flag=False,
@@ -143,6 +141,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         prediction_step_size=30,
         recovery_probability=0.2,
         phase_history_only_phase_switches_flag=True,
+        image_dim = (224,224),
         verbose=False,
         
     ):
@@ -153,6 +152,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         self.split_name = split_name
         self.dataset_dir = dataset_dir
+        self.image_dim = image_dim
         self.camera_names = camera_names
         self.camera_file_suffixes = camera_file_suffixes
         self.history_len = history_len
@@ -160,7 +160,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.history_step_size = history_step_size
         self.num_episodes = num_episodes
         self.input_transforms = input_transforms
-        self.center_crop_flag = center_crop_flag
         self.reduced_base_class_set_flag = reduced_base_class_set_flag
         self.use_history_flag = use_phase_history_flag
         self.use_jaw_values_flag = use_jaw_values_flag
@@ -475,13 +474,10 @@ class SequenceDataset(torch.utils.data.Dataset):
                 cam_folder = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, cam_name)
                 frame_path = os.path.join(cam_folder, f"frame{str(ts_demo_frame_idx).zfill(6)}{cam_file_suffix}")
                 img = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
-                # Resize the image to 224x224 
-                if self.center_crop_flag:
-                    img_resized_224 = center_crop_resize(img, 224)
-                else:
-                    img_resized_224 = transforms.Resize((224, 224))(img)
+                # Resize the image to desired image size
+                img_resized = transforms.Resize(self.image_dim)(img)
                 
-                image_dict[cam_name] = img_resized_224
+                image_dict[cam_name] = img_resized
                 
             all_cam_images = [
                 image_dict[cam_name] for cam_name in self.camera_names
@@ -516,14 +512,14 @@ def load_merged_data(
     test_only=False,
     input_transforms=None,
     dagger_ratio=None,
-    center_crop_flag=False,
     reduced_base_class_set_flag=False,
     use_phase_history_flag=False,
     use_jaw_values_flag=False,
     phase_history_len=6,
     prediction_step_size=30,
     recovery_probability = 0.25,
-    phase_history_only_phase_switches_flag = False
+    phase_history_only_phase_switches_flag = False,
+    image_dim=(224, 224),
 ):
     
     print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
@@ -559,8 +555,7 @@ def load_merged_data(
     ds_metadata_dict["test_only"] = test_only
     ds_metadata_dict["input_transforms"] = input_transforms
     ds_metadata_dict["dataset_dirs"] = dataset_dirs
-    ds_metadata_dict["num_episodes_list"] = num_episodes_list    
-    ds_metadata_dict["center_crop_flag"] = center_crop_flag
+    ds_metadata_dict["num_episodes_list"] = num_episodes_list 
     ds_metadata_dict["reduced_base_class_set_flag"] = reduced_base_class_set_flag
     ds_metadata_dict["use_history_flag"] = use_phase_history_flag
     ds_metadata_dict["use_jaw_values_flag"] = use_jaw_values_flag
@@ -568,6 +563,7 @@ def load_merged_data(
     ds_metadata_dict["prediction_step_size"] = prediction_step_size
     ds_metadata_dict["recovery_probability"] = recovery_probability
     ds_metadata_dict["phase_history_only_phase_switches_flag"] = phase_history_only_phase_switches_flag
+    ds_metadata_dict["image_dim"] = image_dim
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
@@ -616,14 +612,14 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
                         phase_history_len,
                         prediction_step_size,
                         recovery_probability,
-                        phase_history_only_phase_switches_flag)
+                        phase_history_only_phase_switches_flag,
+                        image_dim=image_dim)
             )
             
             # Get dataset statistics
@@ -647,14 +643,14 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
                         phase_history_len,
                         prediction_step_size,
                         recovery_probability,
-                        phase_history_only_phase_switches_flag)
+                        phase_history_only_phase_switches_flag,
+                        image_dim=image_dim)
             )
             val_datasets.append(SequenceDataset(
                         "val",
@@ -667,14 +663,14 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
                         phase_history_len,
                         prediction_step_size,
                         recovery_probability,
-                        phase_history_only_phase_switches_flag)
+                        phase_history_only_phase_switches_flag,
+                        image_dim=image_dim)
             )
             
             # Get dataset statistics
@@ -708,14 +704,14 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
                         phase_history_len,
                         prediction_step_size,
                         recovery_probability,
-                        phase_history_only_phase_switches_flag)
+                        phase_history_only_phase_switches_flag,
+                        image_dim=image_dim)
             )
             
             # Get dataset statistics
@@ -859,6 +855,7 @@ if __name__ == "__main__":
     recovery_probability = 0.4
     phase_history_only_phase_switches_flag = False
     verbose_flag = True
+    image_dim = (360, 480) # H x W
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     input_transforms = []
@@ -871,7 +868,7 @@ if __name__ == "__main__":
     # Note: Manual augmetnations
     # input_transforms.append(transforms.RandomRotation(15))
     # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # input_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    # input_transforms.append(transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0))) # TODO: Add here the image size
     
     # input_transforms.append(v2.RandomPerspective(p=0.5))
     # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
@@ -893,7 +890,6 @@ if __name__ == "__main__":
         history_step_size,
         num_episodes,
         input_transforms,
-        center_crop_flag=False,
         reduced_base_class_set_flag=reduced_base_class_set_flag,
         use_phase_history_flag=True,
         use_jaw_values_flag=True,
@@ -901,6 +897,7 @@ if __name__ == "__main__":
         prediction_step_size=prediction_step_size,
         recovery_probability=recovery_probability,
         phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
+        image_dim=image_dim,
         verbose=verbose_flag
     )
 

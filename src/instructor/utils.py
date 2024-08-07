@@ -4,17 +4,6 @@ import torch
 from torchvision import transforms
 from torch.utils.data import Sampler
 
-def center_crop_resize(img, size):
-    # Center crop the image to biggest possible square and resize it to the desired size
-    
-    min_img_dim = min(img.shape[1:])
-    transform = transforms.Compose([
-        transforms.CenterCrop(min_img_dim),
-        transforms.Resize(size)
-    ])
-    img_transformed = transform(img)
-    return img_transformed
-
 def randintgaussian(low, high, mean, std_dev):
     """
     Generate a random integer using a Gaussian distribution and clip it to the specified range.

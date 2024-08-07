@@ -29,7 +29,6 @@ else:
 from instructor.train_daVinci import build_instructor, log_confusion_matrix, log_combined_image
 from instructor.constants_daVinci import DATASET_CONFIGS
 from instructor.dataset_daVinci import get_valid_demo_start_end_indices
-from instructor.utils import center_crop_resize
 
 # Context manager to measure the execution time of a code block
 @contextlib.contextmanager
@@ -86,7 +85,7 @@ def psm2_jaw_callback(data):
     
 # --------------- Utils function ---------------
 
-def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_name_file_suffix_dict, downsampling_shape, center_crop_flag, 
+def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_names, camera_name_file_suffix_dict, image_dim, 
                                 use_jaw_values_flag=True, phase_to_instruction_mapping=None):
     # Put together the stitched episode based on randomly getting a tissue id and a random index for a demo for each phase. Then sample a random timestep and get the corresponding image sequence and command embedding
        
@@ -146,10 +145,7 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
                 frame_path = os.path.join(camera_folder_name, f"frame{str(ts_demo_frame_idx).zfill(6)}{camera_file_suffix}")
                 frame = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
                 # Resize the image
-                if center_crop_flag:
-                    frame_resized = center_crop_resize(frame, downsampling_shape[0])
-                else:
-                    frame_resized = transforms.Resize(downsampling_shape)(frame)
+                frame_resized = transforms.Resize(image_dim)(frame)
                 camera_frame_dict[camera_name] = frame_resized
             
             # Stack the camera frames together
@@ -183,7 +179,7 @@ def get_current_jaw_values(input_type, frame_idx=None, random_episode_jaw_value_
             return True, random_episode_jaw_value_sequence[frame_idx]
 
 
-def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_idx=None, random_episode_frame_sequence=None, camera_names=None):
+def get_current_frames(input_type, image_dim, frame_idx=None, random_episode_frame_sequence=None, camera_names=None):
     # Based on the input type (live, random) get the current frames stacked together
     
     if input_type == "live":
@@ -207,10 +203,7 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
                 return False, None
             else:
                 # Resize the image
-                if center_crop_flag: 
-                    camera_frame = center_crop_resize(camera_frame, downsampling_shape[0])
-                else:
-                    camera_frame = cv2.resize(camera_frame, downsampling_shape)
+                camera_frame = cv2.resize(camera_frame, (image_dim[1],image_dim[0])) # As cv2 uses width x height
                 
                 # Convert the image to RGB
                 if camera_name not in ["left_img_dir", "right_img_dir"]: 
@@ -320,7 +313,7 @@ def instructor_pipeline(args):
     # Output the command line parameters
     print("\n----------------------- Command line parameters ----------------------------\n")
     for arg in vars(args):
-        if args.input_type == "random" and arg == "tissue_name":
+        if args.input_type == "live" and (arg == "tissue_name" or arg == "dataset_dir"): # Skip the tissue name and dataset dir for live input
             continue
         print(f"{arg}: {getattr(args, arg)}")
     print("\n-----------------------------------------------------------------------------\n")
@@ -350,29 +343,25 @@ def instructor_pipeline(args):
     history_step_size = checkpoint.history_step_size 
     one_hot_flag = checkpoint.one_hot_flag
     model_camera_names = checkpoint.camera_names
-    center_crop_flag = checkpoint.center_crop_flag
     backbone_model_name = checkpoint.backbone_model_name
     model_init_weights = checkpoint.model_init_weights
     freeze_backbone_until = checkpoint.freeze_backbone_until
     use_jaw_values_flag = checkpoint.use_jaw_values_flag
     use_phase_history_flag = checkpoint.use_phase_history_flag
     phase_history_len = checkpoint.phase_history_len
-    use_transformer_flag = checkpoint.use_image_emb_transformer_flag
+    use_transformer_flag = checkpoint.use_image_emb_transformer_flag    
     # TODO: Do this also for the other checkpoint parameters (for backward compatibility)
+    image_dim = checkpoint.image_dim if hasattr(checkpoint, "image_dim") else (224,224)
     phase_to_instruction_mapping = checkpoint.phase_to_instruction_mapping if hasattr(checkpoint, "phase_to_instruction_mapping") else None
     phase_history_only_phase_switches_flag = checkpoint.phase_history_only_phase_switches_flag if hasattr(checkpoint, "phase_history_only_phase_switches_flag") else False
     instructor_model = build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, 
-                                        model_camera_names, center_crop_flag, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, 
+                                        model_camera_names, backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, 
                                         use_phase_history_flag, phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag)  
     
     # Load the model weights
     instructor_model.load_state_dict(checkpoint.state_dict())    
     instructor_model.to(device)
     del checkpoint # Free up memory
-
-    # Check if the model cameras matches the cameras selected as args
-    if set(model_camera_names) != set(args.camera_names):
-        raise ValueError(f"The model was trained on the cameras {model_camera_names} but the selected cameras are {args.camera_names}")
 
     # Set the model to evaluation mode
     instructor_model.eval()
@@ -390,15 +379,15 @@ def instructor_pipeline(args):
         # instruction_embedding_publisher = rospy.Publisher("/instructor_embedding", Float32MultiArray, queue_size=args.publisher_queue_size)
         
         # Wrist camera subs
-        if "endo_psm1" in args.camera_names:
+        if "endo_psm1" in model_camera_names:
             endo_psm1_sub = rospy.Subscriber("/PSM1/endoscope_img", Image, psm1_wrist_camera_callback, queue_size=args.subscriber_queue_size)
-        if "endo_psm2" in args.camera_names:
+        if "endo_psm2" in model_camera_names:
             endo_psm2_sub = rospy.Subscriber("/PSM2/endoscope_img", Image, psm2_wrist_camera_callback, queue_size=args.subscriber_queue_size)
         
         # Endoscope imgs
-        if "left_img_dir" in args.camera_names:
+        if "left_img_dir" in model_camera_names:
             left_img_dir_sub = rospy.Subscriber("/jhu_daVinci/left/image_raw", Image, left_camera_callback, queue_size=args.subscriber_queue_size)
-        if "right_img_dir" in args.camera_names:
+        if "right_img_dir" in model_camera_names:
             right_img_dir_sub = rospy.Subscriber("/jhu_daVinci/right/image_raw", Image, right_camera_callback, queue_size=args.subscriber_queue_size)
             
         # Jaw values
@@ -413,11 +402,11 @@ def instructor_pipeline(args):
     if args.input_type == "random":
         # Generate a random episode
         if use_jaw_values_flag:
-            frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence, phase_start_idx_dict = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
-                                                                                                                           args.downsampling_shape, center_crop_flag, use_jaw_values_flag, phase_to_instruction_mapping) 
+            frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence, phase_start_idx_dict = create_random_chole_episode(args.dataset_dir, args.tissue_name, model_camera_names, args.camera_name_file_suffix_dict, 
+                                                                                                                           image_dim, use_jaw_values_flag, phase_to_instruction_mapping) 
         else:
-            frame_episode_sequence, episode_gt_instruction_sequence, phase_start_idx_dict = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
-                                                                                                                    args.downsampling_shape, center_crop_flag, use_jaw_values_flag, phase_to_instruction_mapping)
+            frame_episode_sequence, episode_gt_instruction_sequence, phase_start_idx_dict = create_random_chole_episode(args.dataset_dir, args.tissue_name, model_camera_names, args.camera_name_file_suffix_dict, 
+                                                                                                                    image_dim, use_jaw_values_flag, phase_to_instruction_mapping)
     
         # Check if the gt instructions are within the learned instructions of the model
         gt_instructions_set = set(episode_gt_instruction_sequence)
@@ -492,9 +481,9 @@ def instructor_pipeline(args):
 
                 with measure_execution_time("Loading video frame time", execution_times_dict):
                     if args.input_type == "random":
-                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx_abs, random_episode_frame_sequence=frame_episode_sequence)
+                        success, current_frames = get_current_frames(args.input_type, image_dim, frame_idx=frame_idx_abs, random_episode_frame_sequence=frame_episode_sequence)
                     elif args.input_type == "live":
-                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, camera_names=args.camera_names)
+                        success, current_frames = get_current_frames(args.input_type, image_dim, camera_names=model_camera_names)
                     # Break out of the loop if the image could not be loaded (e.g., frame could not be loaded)
                     if not success:
                         break   # Stop the loop and save the video up to here (if desired)
@@ -728,9 +717,6 @@ def parse_pipeline_args():
     parser.add_argument('--input_type', type=str, default="random",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
-    # Image size
-    parser.add_argument('--downsampling_shape', type=tuple, default=(224, 224), help="Desired size of the input image") # TODO: Get this from the model checkpoint (add into model checkpoint)
-    
     # Camera name file suffix dict
     default_camera_name_file_suffix_dict = {"endo_psm2": "_psm2.jpg", "left_img_dir": "_left.jpg", "right_img_dir": "_right.jpg", "endo_psm1": "_psm1.jpg"}
     parser.add_argument('--camera_name_file_suffix_dict', type=dict, default=default_camera_name_file_suffix_dict, help="Dictionary with the camera names and their corresponding file suffixes")
@@ -740,10 +726,6 @@ def parse_pipeline_args():
     
     # Low level policy speed ratio (as the low level policy is slower than the high level policy) - set when ll policy will be used
     parser.add_argument('--ll_policy_slowness_factor', type=int, default=3, help="Speed ratio of the low level policy compared to the high level policy")
-    
-    # TODO: Remove here - take from the model ckpt - if not given assume ["endo_psm2", "left_img_dir", "endo_psm1"] 
-    # Camera names - based on the order of the cameras, the images will be stacked together as model input
-    parser.add_argument('--camera_names', type=str, nargs='+', default=["endo_psm2", "left_img_dir", "endo_psm1"], help="Names of the cameras") # Possible cameras: "endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"
     
     # Add dataset directory
     default_dataset_name = "base_chole_clipping_cutting"

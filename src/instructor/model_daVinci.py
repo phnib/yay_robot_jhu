@@ -23,7 +23,6 @@ class Instructor(nn.Module):
         history_step_size,
         prediction_offset,
         camera_names,
-        center_crop_flag,
         output_dim=768, # DestillBert embedding space size
         hidden_dim=256, # For the MLP
         num_heads=8, # For the Transformer
@@ -46,9 +45,13 @@ class Instructor(nn.Module):
         phase_history_only_phase_switches_flag=False,
         camera_dropout_prob=0.1,
         jaw_values_dropout_prob=0.1,
-        phase_history_dropout_prob=0.1
+        phase_history_dropout_prob=0.1,
+        image_dim=(224,224)
     ):
         super().__init__()
+
+        if image_dim != (224,224) and backbone_model_name != "clip":
+            print(f"Warning: Image dimension {image_dim} != (224,224) and used backbone model {backbone_model_name} might be incompatible.")
 
         # Load pretrained backbone model
         self.backbone_model, self.backbone_output_dim = init_feature_extractor_model(backbone_model_name, model_init_weights, device, freeze_backbone_until)
@@ -127,7 +130,6 @@ class Instructor(nn.Module):
         self.history_step_size = history_step_size
         self.prediction_offset = prediction_offset
         self.camera_names = camera_names
-        self.center_crop_flag = center_crop_flag
         self.candidate_embeddings = candidate_embeddings 
         self.candidate_texts = candidate_texts
         self.command_to_index = command_to_index 
@@ -151,6 +153,7 @@ class Instructor(nn.Module):
             self.num_layers = num_layers
         self.phase_to_instruction_mapping = phase_to_instruction_mapping
         self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
+        self.image_dim = image_dim
 
         # Dropout probabilities
         self.camera_dropout_prob = camera_dropout_prob
@@ -170,7 +173,7 @@ class Instructor(nn.Module):
         batch_size, timesteps, num_cameras, c, h, w = images.shape
 
         # Apply camera dropout
-        if self.training:
+        if self.training and self.camera_dropout_prob > 0:
             camera_dropout_mask = torch.bernoulli(torch.ones(batch_size, num_cameras, device=self.device) * (1 - self.camera_dropout_prob))
             camera_dropout_mask = camera_dropout_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             images = images * camera_dropout_mask
@@ -187,7 +190,7 @@ class Instructor(nn.Module):
         # Reshape images to (b*t*k, c, h, w) for processing through backbone model
         images_reshaped = images.reshape(batch_size * timesteps * num_cameras, c, h, w)
 
-        # Apply transformations for backbone model --> backbone model expects images to be normalized and resized to 224*224
+        # Apply transformations for backbone model --> backbone model expects images to be normalized and resized e.g. to 224*224
         images_transformed = preprocess_inputs(images_reshaped, self.backbone_model_name, self.model_init_weights, self.device, self.processor) 
 
         # Get image features from backbone model
@@ -219,7 +222,7 @@ class Instructor(nn.Module):
         # Process the jaw values (if available)
         if self.use_jaw_values_flag:
             # Apply jaw values dropout
-            if self.training:
+            if self.training and self.jaw_values_dropout_prob > 0:
                 jaw_input_dropout_mask = torch.bernoulli(torch.ones((batch_size, 1, 2), device=self.device) * (1 - self.jaw_values_dropout_prob))
                 psm2_psm1_jaw_values = psm2_psm1_jaw_values * jaw_input_dropout_mask
             psm2_psm1_jaw_values_flattened = psm2_psm1_jaw_values.reshape(batch_size, -1) # Flatten the jaw values: (batch_size, timesteps, 2) -> (batch_size, timesteps*2)
@@ -233,7 +236,7 @@ class Instructor(nn.Module):
         # Process the phase history (if available)
         if self.use_phase_history_flag:
             # Apply phase history dropout
-            if self.training:
+            if self.training and self.phase_history_dropout_prob > 0:
                 phase_history_dropout_mask = torch.bernoulli(torch.ones((batch_size, 1), device=self.device) * (1 - self.phase_history_dropout_prob))
                 phase_history = (phase_history * phase_history_dropout_mask).to(torch.int64)
             
@@ -379,7 +382,6 @@ if __name__ == "__main__":
     phase_history_len = 6
     use_jaw_values_flag = True
     use_transformer_flag = False 
-    center_crop_flag = True
     reduced_base_class_set_flag = False
     one_hot_flag = True
     backbone_model_name = "clip"
@@ -388,6 +390,7 @@ if __name__ == "__main__":
     recovery_probability = 0.4
     phase_history_only_phase_switches_flag = False
     camera_dropout_prob = jaw_values_dropout_prob = phase_history_dropout_prob=0.4
+    image_dim = (360,480) # (h,w)
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
     input_transforms = []
@@ -400,7 +403,7 @@ if __name__ == "__main__":
     # Note: Manual augmetnations
     # input_transforms.append(transforms.RandomRotation(15))
     # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # input_transforms.append(transforms.RandomResizedCrop(224, scale=(0.8, 1.0)))
+    # input_transforms.append(transforms.RandomResizedCrop(image_dim, scale=(0.8, 1.0)))
     
     # input_transforms.append(v2.RandomPerspective(p=0.5))
     # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
@@ -416,8 +419,8 @@ if __name__ == "__main__":
     num_episodes_list = [200]*len(datasets_dir)
     camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
     camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-    batch_size_train = 16
-    batch_size_val = 16
+    batch_size_train = 4
+    batch_size_val = 4
 
     # Load the dataloader
     train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -435,10 +438,10 @@ if __name__ == "__main__":
         use_jaw_values_flag=use_jaw_values_flag,
         reduced_base_class_set_flag=reduced_base_class_set_flag,
         phase_history_len=phase_history_len,
-        center_crop_flag=center_crop_flag,
         prediction_step_size=prediction_step_size,
         recovery_probability=recovery_probability,
         phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
+        image_dim=image_dim
     )    
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]
@@ -457,7 +460,6 @@ if __name__ == "__main__":
         candidate_texts=candidate_texts,
         command_to_index=command_to_index,
         camera_names=camera_names,
-        center_crop_flag=center_crop_flag,
         use_jaw_values_flag=use_jaw_values_flag,
         use_phase_history_flag=use_phase_history_flag,
         use_image_emb_transformer_flag=use_transformer_flag,
@@ -468,7 +470,8 @@ if __name__ == "__main__":
         phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
         camera_dropout_prob=camera_dropout_prob,
         jaw_values_dropout_prob=jaw_values_dropout_prob,
-        phase_history_dropout_prob=phase_history_dropout_prob
+        phase_history_dropout_prob=phase_history_dropout_prob,
+        image_dim=image_dim
     )
     model.to(device)
 

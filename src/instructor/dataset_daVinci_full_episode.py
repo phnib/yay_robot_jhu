@@ -20,7 +20,6 @@ if path_to_yay_robot:
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
-from instructor.utils import center_crop_resize
 from instructor.constants_daVinci import DATASET_CONFIGS # get task parameters
 from instructor.utils import DAggerSampler
     
@@ -133,7 +132,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         history_step_size=30,
         num_episodes=200,
         input_transforms=None,
-        center_crop_flag=False,
         reduced_base_class_set_flag=False,
         use_phase_history_flag=False,
         use_jaw_values_flag=False,
@@ -154,7 +152,6 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.history_step_size = history_step_size
         self.num_episodes = num_episodes
         self.input_transforms = input_transforms
-        self.center_crop_flag = center_crop_flag
         self.reduced_base_class_set_flag = reduced_base_class_set_flag
         self.use_history_flag = use_phase_history_flag
         self.use_jaw_values_flag = use_jaw_values_flag
@@ -346,10 +343,7 @@ class SequenceDataset(torch.utils.data.Dataset):
                 frame_path = os.path.join(cam_folder, f"frame{str(ts_demo_frame_idx).zfill(6)}{cam_file_suffix}")
                 img = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
                 # Resize the image to 224x224 
-                if self.center_crop_flag:
-                    img_resized_224 = center_crop_resize(img, 224)
-                else:
-                    img_resized_224 = transforms.Resize((224, 224))(img)
+                img_resized_224 = transforms.Resize((224, 224))(img)
                 
                 image_dict[cam_name] = img_resized_224
                 
@@ -384,7 +378,6 @@ def load_merged_data(
     test_only=False,
     input_transforms=None,
     dagger_ratio=None,
-    center_crop_flag=False,
     reduced_base_class_set_flag=False,
     use_phase_history_flag=False,
     use_jaw_values_flag=False,
@@ -426,7 +419,6 @@ def load_merged_data(
     ds_metadata_dict["input_transforms"] = input_transforms
     ds_metadata_dict["dataset_dirs"] = dataset_dirs
     ds_metadata_dict["num_episodes_list"] = num_episodes_list    
-    ds_metadata_dict["center_crop_flag"] = center_crop_flag
     ds_metadata_dict["reduced_base_class_set_flag"] = reduced_base_class_set_flag
     ds_metadata_dict["use_history_flag"] = use_phase_history_flag
     ds_metadata_dict["use_jaw_values_flag"] = use_jaw_values_flag
@@ -480,7 +472,6 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
@@ -509,7 +500,6 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
@@ -527,7 +517,6 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
@@ -566,7 +555,6 @@ def load_merged_data(
                         history_step_size,
                         num_episodes,
                         input_transforms,
-                        center_crop_flag,
                         reduced_base_class_set_flag,
                         use_phase_history_flag,
                         use_jaw_values_flag,
@@ -747,7 +735,6 @@ if __name__ == "__main__":
         history_step_size,
         num_episodes,
         input_transforms,
-        center_crop_flag=False,
         reduced_base_class_set_flag=reduced_base_class_set_flag,
         use_phase_history_flag=True,
         use_jaw_values_flag=True,
