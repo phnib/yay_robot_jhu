@@ -187,7 +187,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             phases = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name)) and file_name.split('_')[0].isdigit()]
             phases_ordered = sorted(phases, key=lambda x: int(x.split('_')[0]))
             # Exclude grabbing gallbladder tissues (so tissues where grabbing gallbladder is not containing both grab and pull)
-            if tissue_sample_name in dataset_config["exclude_grabbing_gallbladder_tissues"]:
+            if "exclude_grabbing_gallbladder_tissues" in dataset_config and tissue_sample_name in dataset_config["exclude_grabbing_gallbladder_tissues"]:
                 phases_ordered = [phase for phase in phases_ordered if int(phase.split("_")[0]) != 1]
             self.tissue_phase_demo_dict[tissue_sample_name] = {}
             for phase_sample in phases_ordered:

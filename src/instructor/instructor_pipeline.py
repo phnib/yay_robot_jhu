@@ -108,6 +108,8 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
     phases_folder_names = [file_name for file_name in os.listdir(tissue_sample_dir_path) if os.path.isdir(os.path.join(tissue_sample_dir_path, file_name))]
     phases_folder_names = [phase_folder_name for phase_folder_name in phases_folder_names if "recovery" not in phase_folder_name]
     sorted_phases = sorted(phases_folder_names, key=lambda x: int(x.split('_')[0]))
+    phase_start_idx_dict = {}
+    curr_episode_len = 0
     for phase_folder_name in sorted_phases:
         # Select a random demo for the current phase
         files_in_phase_folder = os.listdir(os.path.join(dataset_dir, selected_tissue_sample, phase_folder_name))
@@ -123,6 +125,10 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
         if phase_to_instruction_mapping:
             phase_instruction = phase_to_instruction_mapping[phase_folder_name]
         episode_gt_instruction_sequence += [phase_instruction]*num_frames # Add the instruction for the current demo
+        
+        # Store the start index for the current phase
+        phase_start_idx_dict[phase_instruction] = curr_episode_len
+        curr_episode_len = curr_episode_len + num_frames
         
         # Get the jaw values for the current demo
         if use_jaw_values_flag:
@@ -155,9 +161,9 @@ def create_random_chole_episode(dataset_dir, selected_tissue_sample, camera_name
     episode_frame_sequence_tensor = torch.stack(episode_frame_sequence, dim=0) / 255.0
     if use_jaw_values_flag:
         episode_jaw_value_sequence_tensor = torch.concatenate(episode_jaw_values_sequence, dim=0).to(dtype=torch.float32)
-        return episode_frame_sequence_tensor, episode_jaw_value_sequence_tensor, episode_gt_instruction_sequence # Jaw values shape should be: num_frames, 2
+        return episode_frame_sequence_tensor, episode_jaw_value_sequence_tensor, episode_gt_instruction_sequence, phase_start_idx_dict # Jaw values shape should be: num_frames, 2
     else:
-        return episode_frame_sequence_tensor, episode_gt_instruction_sequence # Frame episode shape should be: num_frames, cam, c, h, w
+        return episode_frame_sequence_tensor, episode_gt_instruction_sequence, phase_start_idx_dict # Frame episode shape should be: num_frames, cam, c, h, w
 
 
 def get_current_jaw_values(input_type, frame_idx=None, random_episode_jaw_value_sequence=None):
@@ -210,7 +216,7 @@ def get_current_frames(input_type, downsampling_shape, center_crop_flag, frame_i
                 if camera_name not in ["left_img_dir", "right_img_dir"]: 
                     camera_frame = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2RGB)
                 current_frames_transformed.append(torch.tensor(camera_frame.transpose(2, 0, 1)) / 255.0) # Shape: c, h, w
-        
+
         return True, torch.stack(current_frames_transformed, dim=0) # Shape: cam, c, h, w 
         
         
@@ -314,6 +320,8 @@ def instructor_pipeline(args):
     # Output the command line parameters
     print("\n----------------------- Command line parameters ----------------------------\n")
     for arg in vars(args):
+        if args.input_type == "random" and arg == "tissue_name":
+            continue
         print(f"{arg}: {getattr(args, arg)}")
     print("\n-----------------------------------------------------------------------------\n")
 
@@ -326,7 +334,7 @@ def instructor_pipeline(args):
         output_folder_path = os.path.join(PATH_TO_YAY_ROBOT, "evaluation", "hl_policy_pipeline", args.input_type, ckpt_name, timestamp)
         
     # Create the recordings folder if it does not exist
-    if not os.path.exists(output_folder_path):
+    if not os.path.exists(output_folder_path) and (args.save_video_flag or args.input_type == "random"): 
         os.makedirs(output_folder_path)
     
     # -------------- Initialize the instructor model --------------
@@ -404,8 +412,12 @@ def instructor_pipeline(args):
     
     if args.input_type == "random":
         # Generate a random episode
-        frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
+        if use_jaw_values_flag:
+            frame_episode_sequence, jaw_values_episode_sequence, episode_gt_instruction_sequence, phase_start_idx_dict = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
                                                                                                                            args.downsampling_shape, center_crop_flag, use_jaw_values_flag, phase_to_instruction_mapping) 
+        else:
+            frame_episode_sequence, episode_gt_instruction_sequence, phase_start_idx_dict = create_random_chole_episode(args.dataset_dir, args.tissue_name, args.camera_names, args.camera_name_file_suffix_dict, 
+                                                                                                                    args.downsampling_shape, center_crop_flag, use_jaw_values_flag, phase_to_instruction_mapping)
     
         # Check if the gt instructions are within the learned instructions of the model
         gt_instructions_set = set(episode_gt_instruction_sequence)
@@ -428,15 +440,20 @@ def instructor_pipeline(args):
     
     # Init phase history list (with the phase indices up to the start phase)
     if use_phase_history_flag:
-        if not args.input_type == "live" or not args.starting_phase_idx:
+        if not args.starting_phase_idx:
             phase_history = [0]*phase_history_len 
         # TODO: How to init for the new approach? Already set the phase history len based on the prediction step size?!
         else:
             # TODO: Add here the new version of the phase history - might move the initial prediction here instead of below
             # TODO: Check how to init the phase history len here for the new approach?! Take the mean of the phase history len?
             phase_history = [0]*(max(0, phase_history_len-args.starting_phase_idx)) + list(range(args.starting_phase_idx))[-phase_history_len:]
-            phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history if phase_idx != 0]
-            print(f"Starting phase: {candidate_texts[args.starting_phase_idx-1]} - Phase history: {phase_history_commands}")
+        # Get the starting phase based on the starting phase index 
+        phase_history_commands = [candidate_texts[phase_idx-1] for phase_idx in phase_history if phase_idx != 0]
+        if args.starting_phase_idx:
+            starting_phase = candidate_texts[args.starting_phase_idx-1]
+        else:
+            starting_phase = candidate_texts[0]
+        print(f"Starting phase: {starting_phase} - Phase history: {phase_history_commands}")
         model_input_phase_history = torch.tensor(phase_history).to(device).unsqueeze(0) # Shape: batch_size (=1), phase_history_len
     else:
         model_input_phase_history = None
@@ -451,17 +468,20 @@ def instructor_pipeline(args):
     # Init output buffer
     logits_buffer = deque(maxlen=args.low_pass_buffer_size)
     
+    # Init the frame index and the frame index offset (if starting phase index is given)
     frame_idx = 0
+    frame_idx_offset = 0 if not args.starting_phase_idx or args.input_type == "live" else phase_start_idx_dict[starting_phase]
     new_pred_flag = False
     while not exit_flag:
+        frame_idx_abs = frame_idx + frame_idx_offset
         with measure_execution_time("Total inference time", execution_times_dict):
             # -------------- Load current jaw values + camera frames --------------
 
-            if args.visualization_flag or args.save_video_flag or frame_idx % history_step_size*args.ll_policy_slowness_factor == 0: # Only load the frames if they are needed (for visualization, saving video, or for the model input)
+            if args.visualization_flag or args.save_video_flag or (frame_idx % history_step_size*args.ll_policy_slowness_factor) == 0: # Only load the frames if they are needed (for visualization, saving video, or for the model input)
                 if use_jaw_values_flag:
                     with measure_execution_time("Loading jaw values time", execution_times_dict):
                         if args.input_type == "random":
-                            success, current_jaw_values = get_current_jaw_values(args.input_type, frame_idx=frame_idx, random_episode_jaw_value_sequence=jaw_values_episode_sequence)
+                            success, current_jaw_values = get_current_jaw_values(args.input_type, frame_idx=frame_idx_abs, random_episode_jaw_value_sequence=jaw_values_episode_sequence)
                         elif args.input_type == "live":
                             success, current_jaw_values = get_current_jaw_values(args.input_type)
                         # Break out of the loop if the jaw values could not be loaded (e.g., end of the episode)
@@ -472,7 +492,7 @@ def instructor_pipeline(args):
 
                 with measure_execution_time("Loading video frame time", execution_times_dict):
                     if args.input_type == "random":
-                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx, random_episode_frame_sequence=frame_episode_sequence)
+                        success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, frame_idx=frame_idx_abs, random_episode_frame_sequence=frame_episode_sequence)
                     elif args.input_type == "live":
                         success, current_frames = get_current_frames(args.input_type, args.downsampling_shape, center_crop_flag, camera_names=args.camera_names)
                     # Break out of the loop if the image could not be loaded (e.g., frame could not be loaded)
@@ -481,7 +501,7 @@ def instructor_pipeline(args):
                     # Add the current frames to the model input frames + generate current input tensor
                     
                     # Add frames and jaw values to model input based on the history step size (and dependent of the slower speed of the low level policy)
-                    if frame_idx % history_step_size*args.ll_policy_slowness_factor == 0:
+                    if frame_idx % (history_step_size*args.ll_policy_slowness_factor) == 0:
                         model_input_frames.append(current_frames)
                         model_input_frames_tensor = torch.stack(list(model_input_frames), dim=0).to(device).unsqueeze(0) # Shape: batch_size (=1), history_len, cam, c, h, w 
                 
@@ -492,19 +512,16 @@ def instructor_pipeline(args):
             # -------------- Predict (+publish) the language instruction --------------
             
             # Start with predictions after the history length is reached and predict every x frames and not at the beginning (as starting with the first phase)
-            if frame_idx % args.prediction_stride*args.ll_policy_slowness_factor == 0 and len(model_input_frames) == history_len+1 and frame_idx != 0:
+            if frame_idx % (args.prediction_stride*args.ll_policy_slowness_factor) == 0 and len(model_input_frames) == history_len+1 and frame_idx != 0:
                 with measure_execution_time("Instructor_inference_time", execution_times_dict):
                     # Apply the model on the current frames
                     logits, temperature, predicted_embedding = instructor_model(model_input_frames_tensor, model_input_jaw_values_tensor, model_input_phase_history)
-                    print(f"\nFrame Idx: {frame_idx} - Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, Phase history: {model_input_phase_history}")
-                    if args.input_type == "live":
-                        print(f"Frame Idx: {frame_idx} - Predicted instruction: {predicted_instruction}")
+
                     # Apply the low pass filter on the logits (if desired)
                     if args.low_pass_buffer_size > 1:
                         logits_buffer.append(logits)
                         stacked_logits = torch.stack(list(logits_buffer)).squeeze(1)
                         smoothed_logits = apply_logits_lp_filter(stacked_logits, filter_mode=args.lp_filter_mode, smoothing_factor=args.lp_ema_smoothing_factor) 
-                        print(f"Smoothed probabilities: {torch.nn.functional.softmax(smoothed_logits)*100}")
                     else:
                         smoothed_logits = logits
                     # Decode the model output to the language instruction
@@ -512,13 +529,28 @@ def instructor_pipeline(args):
                     instruction_pred_list.append(predicted_instruction)
                     new_pred_flag = True
                     
+                    # Log the model input and the predicted instruction
+                    print(f"\nFrame Idx: {frame_idx_abs} - Jaw values (PSM2, PSM1): {model_input_jaw_values_tensor}, Phase history: {model_input_phase_history}")
+                    
+                    # Get the probabilities of the smoothed logits
+                    if args.print_n_highest_probabilities:
+                        smoothed_probabilities = torch.nn.functional.softmax(smoothed_logits.squeeze(), dim=0)
+                        mapped_smoothed_probabilities_dict = {candidate_texts[phase_idx]: smoothed_probabilities[phase_idx].item() for phase_idx in range(len(candidate_texts))}
+                        # Output the three highest probabilities
+                        sorted_probabilities = sorted(mapped_smoothed_probabilities_dict.items(), key=lambda x: x[1], reverse=True)
+                        for prob_idx in range(args.print_n_highest_probabilities):
+                            print(f"Prediction {prob_idx+1}: {sorted_probabilities[prob_idx][0]} - Probability: {sorted_probabilities[prob_idx][1]*100:.2f}%")
+                    
                     # Publish the predicted language instruction
-                    if args.input_type == "live": 
+                    if args.input_type == "live":
+                        print(f"----> {frame_idx_abs} - Predicted instruction: {predicted_instruction}")
+                        # Publish the predicted language instruction
                         instruction_publisher.publish(predicted_instruction)
-                        # instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))  
+                        # instruction_embedding_publisher.publish(Float32MultiArray(data=predicted_embedding))
+                    
                     
                     # # TODO: Remove later again - debugging
-                    # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
+                    # save_path = os.path.join(output_folder_path, f"frame_{frame_idx_abs}.png")
                     # log_combined_image(model_input_frames_tensor[0], predicted_instruction, predicted_instruction, save_path=save_path)
                     # print(f"Java values: {model_input_jaw_values_tensor}")
                     # print(f"Phase history: {model_input_phase_history}")
@@ -526,16 +558,16 @@ def instructor_pipeline(args):
                     
                     # Evaluate the prediction (if gt instruction is available --> in offline case)
                     if args.input_type == "random":
-                        gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset] if frame_idx + prediction_offset < len(episode_gt_instruction_sequence) else gt_instruction # Get the gt instruction (if available) - repeat last gt instruction if end of episode (by the prediction offset)
+                        gt_instruction = episode_gt_instruction_sequence[frame_idx_abs + prediction_offset] if frame_idx_abs + prediction_offset < len(episode_gt_instruction_sequence) else gt_instruction # Get the gt instruction (if available) - repeat last gt instruction if end of episode (by the prediction offset)
                         instruction_gt_list.append(gt_instruction)
                         
                         if gt_instruction == predicted_instruction:
-                            print(f"Frame Idx: {frame_idx} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction}")
+                            print(f"--> {frame_idx_abs} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction}")
                         else:
-                            print(f"Frame Idx: {frame_idx} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction} --> Wrong prediction")
+                            print(f"----> {frame_idx_abs} - GT instruction: {gt_instruction} - Predicted instruction: {predicted_instruction} --> Wrong prediction")
                         
                         # # TODO: Remove later again - debugging
-                        # save_path = os.path.join(output_folder_path, f"frame_{frame_idx}.png")
+                        # save_path = os.path.join(output_folder_path, f"frame_{frame_idx_abs}.png")
                         # log_combined_image(model_input_frames_tensor[0], gt_instruction, predicted_instruction, save_path=save_path)
                         # print(f"Java values: {model_input_jaw_values_tensor}")
                         # print(f"Phase history: {model_input_phase_history}")
@@ -548,7 +580,7 @@ def instructor_pipeline(args):
                 predicted_embedding = candidate_embeddings[starting_command_idx]
                 new_pred_flag = True # Indicate that a new prediction was made (for the initial prediction) # TODO: Remove here?
                 if args.input_type == "random":
-                    gt_instruction = episode_gt_instruction_sequence[frame_idx + prediction_offset]
+                    gt_instruction = episode_gt_instruction_sequence[frame_idx_abs + prediction_offset]
             
                 # Publish the predicted language instruction
                 if args.input_type == "live": 
@@ -668,9 +700,9 @@ def parse_pipeline_args():
     # --------------------------- Instruction model parameters ---------------------------
     
     # Instructor model path
-    default_ckpt_folder_name = "instructor_models" # "base_chole_clipping_cutting_clip_sda_full_phase_set_one_ts_jaw_history_w_transformer_h_len_3_cosine_scheduler"
+    default_ckpt_folder_name = "base_chole_clipping_cutting_clip_sda_full_phase_set_one_ts_jaw_history_w_transformer_h_len_3_cosine_scheduler" # "instructor_models"
     default_ckpt_folder_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model_ckpts", "hl", default_ckpt_folder_name)
-    default_ckpt_file_name = "best_val_loss_epoch=264" #"best_val_loss_epoch=548"
+    default_ckpt_file_name = "best_val_loss_epoch=548" # "best_val_loss_epoch=264" 
     parser.add_argument('--ckpt_path', type=str, default=os.path.join(default_ckpt_folder_path, f"{default_ckpt_file_name}.ckpt"),
                         help="Path to the instructor model")
 
@@ -693,7 +725,7 @@ def parse_pipeline_args():
     # ---------------------------------- Data parameters -------------------------------------
     
     # Input type (testing it with live data, random generated episodes
-    parser.add_argument('--input_type', type=str, default="live",
+    parser.add_argument('--input_type', type=str, default="random",
                         help="Can be either 'live' or 'random' (for random generated episode)")
     
     # Image size
@@ -707,8 +739,9 @@ def parse_pipeline_args():
     parser.add_argument('--starting_phase_idx', type=int, default=None, help="Starting phase index for the random generated episode (None or 0 when starting from the beginning)")
     
     # Low level policy speed ratio (as the low level policy is slower than the high level policy) - set when ll policy will be used
-    parser.add_argument('--ll_policy_slowness_factor', type=int, default=1, help="Speed ratio of the low level policy compared to the high level policy")
+    parser.add_argument('--ll_policy_slowness_factor', type=int, default=3, help="Speed ratio of the low level policy compared to the high level policy")
     
+    # TODO: Remove here - take from the model ckpt - if not given assume ["endo_psm2", "left_img_dir", "endo_psm1"] 
     # Camera names - based on the order of the cameras, the images will be stacked together as model input
     parser.add_argument('--camera_names', type=str, nargs='+', default=["endo_psm2", "left_img_dir", "endo_psm1"], help="Names of the cameras") # Possible cameras: "endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"
     
@@ -722,7 +755,7 @@ def parse_pipeline_args():
     parser.add_argument('--dataset_dir', type=str, default=default_dataset_dir, help="Path to the dataset directory")
     
     # Add tissue id
-    default_tissue_sample = "tissue_13"
+    default_tissue_sample = "tissue_22"
     parser.add_argument('--tissue_name', type=str, default=default_tissue_sample, help="Tissue id for the random generated episode")
     
     
@@ -743,6 +776,8 @@ def parse_pipeline_args():
     parser.add_argument('--log_execution_times_during_execution_flag', action='store_true', default=False,
                     help="Flag to log the execution times of the different components")
 
+    # Print the n highest probabilities
+    parser.add_argument('--print_n_highest_probabilities', type=int, default=2, help="Print the n highest probabilities of the smoothed logits")
 
     # --------------------------- ROS communication parameters ---------------------------
     
