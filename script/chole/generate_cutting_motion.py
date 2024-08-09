@@ -97,7 +97,7 @@ def remove_extra_row(csv_df, filename, sample_path, repeating_num):
 
 
 if __name__ == "__main__":
-    tissue_ids = [4, 5, 6, 8, 12, 13, 14, 18, 19, 22, 23, 30, 32, 35, 39, 40]
+    tissue_ids = [53]
     # dataset_path = "/home/imerse/chole_ws/data/phantom_chole/phantom_1/ACTUAL_CUTTING_right"
     phases = ["8_go_to_the_cutting_position_left_tube",
               "8_go_to_the_cutting_position_left_tube_recovery", 
@@ -125,7 +125,7 @@ if __name__ == "__main__":
                 generate_cutting_motion(csv, csv_path, 10)
                 # remove_extra_row(csv, csv_path, sample_dir, 10)
 
-            print(f"Done generating cutting for tissue {tissue_id}")
+            print(f"Done generating cutting for tissue {tissue_id} in phase {phase}")
 
     for tissue_id in tissue_ids:
         for phase in phases:
@@ -147,7 +147,7 @@ if __name__ == "__main__":
 
                 remove_extra_row(csv, csv_path, sample_dir, 10)
 
-            print(f"Done removing extra rows for tissue {tissue_id}")
+            print(f"Done removing extra rows for tissue {tissue_id} in phase {phase}")
 
     
     for tissue_id in tissue_ids:
@@ -170,6 +170,6 @@ if __name__ == "__main__":
 
                 generate_cutting_motion_sp(csv, csv_path, 10)
 
-            print(f"Done generating sp for tissue {tissue_id}")
+            print(f"Done generating sp for tissue {tissue_id} in phase {phase}")
 
     print("job finished")
