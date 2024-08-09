@@ -14,6 +14,7 @@ if path_to_yay_robot:
 else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 from instructor.backbone_models_daVinci import extract_features, init_feature_extractor_model, preprocess_inputs, init_processor
+from instructor.dataset_daVinci import SequenceDataset
 
 class Instructor(nn.Module):
     def __init__(
@@ -46,18 +47,19 @@ class Instructor(nn.Module):
         camera_dropout_prob=0.1,
         jaw_values_dropout_prob=0.1,
         phase_history_dropout_prob=0.1,
-        image_dim=(224,224)
+        image_dim=224,
+        llava_anyres_flag=False,
+        no_llava_anyres_global_image_flag=False,
+        wrist_images_rel_width=3/4,
+        llava_anyres_rel_width=1/2
     ):
         super().__init__()
 
-        if image_dim != (224,224) and backbone_model_name != "clip":
-            print(f"Warning: Image dimension {image_dim} != (224,224) and used backbone model {backbone_model_name} might be incompatible.")
-
         # Load pretrained backbone model
-        self.backbone_model, self.backbone_output_dim = init_feature_extractor_model(backbone_model_name, model_init_weights, device, freeze_backbone_until)
+        self.backbone_model, self.backbone_output_dim = init_feature_extractor_model(backbone_model_name, model_init_weights, device, freeze_backbone_until, image_dim)
         self.processor = init_processor(backbone_model_name, model_init_weights)
         
-        num_cameras = len(camera_names)
+        num_camera_patches = SequenceDataset.get_num_patches(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag)
         if use_image_emb_transformer_flag:
             # Transformer for processing sequences of image embeddings
             self.transformer = nn.TransformerEncoder(
@@ -72,11 +74,11 @@ class Instructor(nn.Module):
             
             # Positional Encoding
             self.positional_encoding = self.create_sinusoidal_embeddings(
-                self.backbone_output_dim, (history_len + 1) * num_cameras
+                self.backbone_output_dim, (history_len + 1) * num_camera_patches
             )
             image_output_dim = self.backbone_output_dim
         else:
-            image_output_dim = self.backbone_output_dim * num_cameras * (history_len + 1) # As image features are concatenated then
+            image_output_dim = self.backbone_output_dim * num_camera_patches * (history_len + 1) # As image features are concatenated then
     
         if use_jaw_values_flag:
             # MLP for processing jaw values
@@ -154,6 +156,10 @@ class Instructor(nn.Module):
         self.phase_to_instruction_mapping = phase_to_instruction_mapping
         self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
         self.image_dim = image_dim
+        self.llava_anyres_flag = llava_anyres_flag
+        self.no_llava_anyres_global_image_flag = no_llava_anyres_global_image_flag
+        self.wrist_images_rel_width = wrist_images_rel_width
+        self.llava_anyres_rel_width = llava_anyres_rel_width
 
         # Dropout probabilities
         self.camera_dropout_prob = camera_dropout_prob
@@ -170,11 +176,11 @@ class Instructor(nn.Module):
             assert len(phase_history[0]) == self.phase_history_len, f"Phase history should have length {self.phase_history_len}"
         
         # Given images of shape (b, t, k, c, h, w)
-        batch_size, timesteps, num_cameras, c, h, w = images.shape
+        batch_size, timesteps, num_camera_patches, c, h, w = images.shape
 
         # Apply camera dropout
         if self.training and self.camera_dropout_prob > 0:
-            camera_dropout_mask = torch.bernoulli(torch.ones(batch_size, num_cameras, device=self.device) * (1 - self.camera_dropout_prob))
+            camera_dropout_mask = torch.bernoulli(torch.ones(batch_size, num_camera_patches, device=self.device) * (1 - self.camera_dropout_prob))
             camera_dropout_mask = camera_dropout_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             images = images * camera_dropout_mask
 
@@ -182,30 +188,30 @@ class Instructor(nn.Module):
         if timesteps < self.history_len + 1:
             padding_needed = self.history_len + 1 - timesteps
             padding = torch.zeros(
-                (batch_size, padding_needed, num_cameras, c, h, w), device=images.device
+                (batch_size, padding_needed, num_camera_patches, c, h, w), device=images.device
             )
             images = torch.cat([padding, images], dim=1)
             timesteps = self.history_len + 1  # Update timesteps to reflect the new length
 
         # Reshape images to (b*t*k, c, h, w) for processing through backbone model
-        images_reshaped = images.reshape(batch_size * timesteps * num_cameras, c, h, w)
+        images_reshaped = images.reshape(batch_size * timesteps * num_camera_patches, c, h, w)
 
         # Apply transformations for backbone model --> backbone model expects images to be normalized and resized e.g. to 224*224
         images_transformed = preprocess_inputs(images_reshaped, self.backbone_model_name, self.model_init_weights, self.device, self.processor) 
 
         # Get image features from backbone model
-        image_features = extract_features(self.backbone_model, self.backbone_model_name, self.model_init_weights, images_transformed)
+        image_features = extract_features(self.backbone_model, self.backbone_model_name, self.model_init_weights, self.image_dim, images_transformed)
 
         # Reshape the image features to [batch_size, timesteps*cameras, feature_dim]
         image_features_reshaped = image_features.reshape(
-            batch_size, timesteps * num_cameras, -1
+            batch_size, timesteps * num_camera_patches, -1
         ).to(torch.float32)
 
         # Use the transformer to process the image features or concatenate them
         if self.use_image_emb_transformer_flag:
             # Add positional encoding
             image_features_reshaped += self.positional_encoding[
-                : timesteps * num_cameras, :
+                : timesteps * num_camera_patches, :
             ].to(image_features_reshaped.device)
 
             # Pass the concatenated features through the Transformer
@@ -361,20 +367,24 @@ if __name__ == "__main__":
     import os
     import matplotlib.pyplot as plt
     from torchvision.transforms import v2
+    import albumentations as A
     
-    from instructor.dataset_daVinci import load_merged_data
+    from instructor.dataset_daVinci import load_merged_data, SequenceDataset
     from instructor.utils import set_seed
 
     seed = 42
     set_seed(seed)    
 
     # Parameters for the test
-    gpu = 0
-    datasets_dir = os.getenv("PATH_TO_DATASET")
+    gpu = 1
     tissue_samples_ids = [1]
-    camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
-    camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-    history_len = 5
+    camera_names = ["endo_psm2", "left_img_dir", "endo_psm1"] # "right_img_dir"
+    camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_psm1.jpg"] # "_right.jpg"
+    dataset_names = ["base_chole_clipping_cutting", "phantom_chole"] # "base_chole_clipping_cutting" "phantom_chole" "debugging"
+    datasets_dir = [os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) for dataset_name in dataset_names]
+    num_episodes_list = [200]*len(datasets_dir)
+    batch_size_train = batch_size_val=  16
+    history_len = 3
     prediction_offset = 0 # Get command for the current timestep
     history_step_size = 30
     num_episodes = 200 # Number of randlomy generated stitched episodes
@@ -383,27 +393,33 @@ if __name__ == "__main__":
     use_jaw_values_flag = True
     use_transformer_flag = False 
     reduced_base_class_set_flag = False
-    one_hot_flag = True
+    one_hot_flag = False
     backbone_model_name = "clip"
-    model_init_weights = "sda"
+    model_init_weights = "imagenet"
     prediction_step_size = 30
     recovery_probability = 0.4
     phase_history_only_phase_switches_flag = False
     camera_dropout_prob = jaw_values_dropout_prob = phase_history_dropout_prob=0.4
-    image_dim = (360,480) # (h,w)
+    image_dim = 336
+    llava_anyres_flag = True
+    no_llava_anyres_global_image_flag = False
+    wrist_images_rel_width = 3/4
+    llava_anyres_rel_width = 2/3
+    
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
-    input_transforms = []
+    torch_input_transforms = []
     
     # Note: Automatic augmentations
-    input_transforms.append(transforms.RandAugment())
+    torch_input_transforms.append(transforms.RandAugment())
     # input_transforms.append(transforms.TrivialAugmentWide())
     # input_transforms.append(transforms.AugMix())
     
-    # Note: Manual augmetnations
+    # Note: Manual augmentations
+    # Torch augmentations
+    torch_input_transforms.append(transforms.RandomResizedCrop([image_dim,image_dim], scale=(0.8, 1.0)))
     # input_transforms.append(transforms.RandomRotation(15))
     # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # input_transforms.append(transforms.RandomResizedCrop(image_dim, scale=(0.8, 1.0)))
     
     # input_transforms.append(v2.RandomPerspective(p=0.5))
     # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
@@ -411,16 +427,22 @@ if __name__ == "__main__":
     # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
     # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # input_transforms.append(transforms.RandomGrayscale(p=0.2))
-    input_transforms = transforms.Compose(input_transforms)
+    
+    # Albumentations augmentations
+    albumentation_input_transforms = []
 
-    # Dataset and Dataloader parameters
-    dataset_names = ["base_chole_clipping_cutting", "phantom_chole"] # "base_chole_clipping_cutting" "phantom_chole" "debugging"
-    datasets_dir = [os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) for dataset_name in dataset_names]
-    num_episodes_list = [200]*len(datasets_dir)
-    camera_names = ["left_img_dir", "right_img_dir", "endo_psm1", "endo_psm2"]
-    camera_file_suffixes = ["_left.jpg", "_right.jpg", "_psm1.jpg", "_psm2.jpg"]
-    batch_size_train = 4
-    batch_size_val = 4
+    min_height, min_width = max(1, image_dim // 40), max(1, image_dim // 40)
+    max_height, max_width = min(image_dim // 30, image_dim), min(image_dim // 30, image_dim) 
+    albumentation_input_transforms.append(A.CoarseDropout(max_holes=128, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, 
+                    min_width=min_width, fill_value=0, p=0.5))
+    
+    # Store the transforms in a dictionary
+    torch_input_transforms = transforms.Compose(torch_input_transforms)
+    num_patches = SequenceDataset.get_num_patches(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag)
+    num_input_images = num_patches * (history_len + 1)
+    albumentations_additional_targets = dict(zip([f"image{i}" for i in range(num_input_images)], ["image"] * num_input_images))    
+    albumentation_input_transforms = A.Compose(albumentation_input_transforms, additional_targets=albumentations_additional_targets)
+    input_transforms = {"torch": torch_input_transforms, "albumentations": albumentation_input_transforms}
 
     # Load the dataloader
     train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -441,7 +463,11 @@ if __name__ == "__main__":
         prediction_step_size=prediction_step_size,
         recovery_probability=recovery_probability,
         phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
-        image_dim=image_dim
+        image_dim=image_dim,
+        llava_anyres_flag=llava_anyres_flag,
+        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+        wrist_images_rel_width=wrist_images_rel_width,
+        llava_anyres_rel_width=llava_anyres_rel_width
     )    
     candidate_embeddings = ds_metadata_dict["candidate_embeddings"]
     candidate_texts = ds_metadata_dict["candidate_texts"]
@@ -471,7 +497,11 @@ if __name__ == "__main__":
         camera_dropout_prob=camera_dropout_prob,
         jaw_values_dropout_prob=jaw_values_dropout_prob,
         phase_history_dropout_prob=phase_history_dropout_prob,
-        image_dim=image_dim
+        image_dim=image_dim,
+        llava_anyres_flag=llava_anyres_flag,
+        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+        wrist_images_rel_width=wrist_images_rel_width,
+        llava_anyres_rel_width=llava_anyres_rel_width
     )
     model.to(device)
 
@@ -500,17 +530,20 @@ if __name__ == "__main__":
             break
 
         # Create a figure with subplots: one row per timestamp, one column per camera
-        fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
+        fig_height = 4 * (history_len + 1)
+        camera_patch_names = SequenceDataset.get_camera_patch_names(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag)
+        fig_width = len(camera_patch_names) * 3
+        fig, axes = plt.subplots(history_len + 1, len(camera_patch_names), figsize=(fig_width, fig_height))
         if history_len == 0:
             axes = axes[np.newaxis, :]
 
         # Loop over each timestamp and camera to plot the images
         for t in range(history_len + 1):
-            for cam_idx, cam_name in enumerate(camera_names):
+            for cam_idx, cam_patch_name in enumerate(camera_patch_names):
                 ax = axes[t, cam_idx]  # Get the specific subplot axis
                 img = image_sequence[0, t, cam_idx].permute(1, 2, 0).detach().cpu().numpy()
                 ax.imshow(img)
-                ax.set_title(f"{cam_name} at timestep {t}")
+                ax.set_title(f"{cam_patch_name} at timestep {t}")
                 ax.axis('off')  # Optionally turn off the axis
 
         # Set title to command
@@ -519,8 +552,8 @@ if __name__ == "__main__":
         example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "untrained_model_pred")
         if not os.path.exists(example_dataset_plots_folder_path):
             os.makedirs(example_dataset_plots_folder_path)
-        file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{split_name=}{history_len=}_{history_step_size=}.png")
+        file_name = os.path.join(example_dataset_plots_folder_path, f"untrained_model_pred_img_{split_name=}{history_len=}_{history_step_size=}_{image_dim=}_{wrist_images_rel_width=}_{llava_anyres_rel_width=}_{llava_anyres_flag=}_{no_llava_anyres_global_image_flag}.png")
         file_path = os.path.join(example_dataset_plots_folder_path, file_name)
         plt.savefig(file_path)
-        print(f"Saved {file_name}\n---------")
+        print(f"Saved {file_name}\n\n---------")
         plt.close(fig)  # Close the figure to free memory

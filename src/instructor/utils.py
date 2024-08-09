@@ -1,7 +1,8 @@
 import random
 import numpy as np
 import torch
-from torchvision import transforms
+import math
+
 from torch.utils.data import Sampler
 
 def randintgaussian(low, high, mean, std_dev):
@@ -34,6 +35,29 @@ def set_seed(seed):
         torch.cuda.manual_seed(seed)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
+
+def lr_lambda(current_epoch, warmup_epochs, lr_cycle, base_lr, min_lr):
+    """
+    Learning rate scheduler with warm-up and cosine annealing.
+
+    Parameters:
+    - current_epoch: Current training epoch.
+    - warmup_epochs: Number of warm-up epochs.
+    - lr_cycle: Number of epochs to complete a cosine annealing cycle (T_max).
+    - base_lr: Initial learning rate before warm-up.
+    - min_lr: Minimum learning rate during cosine annealing.
+
+    Returns:
+    - Learning rate multiplier.
+    """
+    if current_epoch < warmup_epochs:
+        # Linear warm-up
+        return (base_lr * (current_epoch / warmup_epochs)) / base_lr
+    else:
+        # Cosine annealing
+        cosine_decay = 0.5 * (1 + math.cos(math.pi * (current_epoch - warmup_epochs) / (lr_cycle - warmup_epochs)))
+        decayed = (1 - min_lr / base_lr) * cosine_decay + min_lr / base_lr
+        return decayed
 
 # ----------------
 

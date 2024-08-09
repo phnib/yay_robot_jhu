@@ -12,6 +12,7 @@ import pandas as pd
 import torch
 from torchvision import transforms
 from torchvision.transforms import v2
+import albumentations as A
 from torch.utils.data import DataLoader, ConcatDataset
 
 # import src code
@@ -23,6 +24,7 @@ else:
 from aloha_pro.aloha_scripts.utils import initialize_model_and_tokenizer, encode_text
 from instructor.constants_daVinci import DATASET_CONFIGS # get task parameters
 from instructor.utils import DAggerSampler, randintgaussian
+from act.generic_dataset import rotate_image, shift_image
     
 def generate_command_embeddings(unique_phase_folder_names, encoder, tokenizer, model, reduced_base_class_set_flag):
     # Returns a dictionary containing the phase command as key and a tuple of the phase command and phase embedding as value
@@ -141,14 +143,20 @@ class SequenceDataset(torch.utils.data.Dataset):
         prediction_step_size=30,
         recovery_probability=0.2,
         phase_history_only_phase_switches_flag=True,
-        image_dim = (224,224),
+        image_dim = 224,
+        llava_anyres_flag=False,
+        no_llava_anyres_global_image_flag=False,
+        wrist_images_rel_width = 3/4,
+        llava_anyres_rel_width = 1/2,
         verbose=False,
-        
     ):
         super().__init__()
         
         if len(tissue_sample_names) == 0:
             raise ValueError("No tissue samples found in the dataset directory.")
+        
+        if llava_anyres_flag and llava_anyres_rel_width < 0.5:
+            raise ValueError("The relative width of the llava anyres images must be at least 0.5.")
         
         self.split_name = split_name
         self.dataset_dir = dataset_dir
@@ -167,6 +175,10 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.prediction_step_size = prediction_step_size
         self.recovery_probability = recovery_probability
         self.phase_history_only_phase_switches_flag = phase_history_only_phase_switches_flag
+        self.llava_anyres_flag = llava_anyres_flag
+        self.no_llava_anyres_global_image_flag = no_llava_anyres_global_image_flag
+        self.wrist_images_rel_width = wrist_images_rel_width
+        self.llava_anyres_rel_width = llava_anyres_rel_width
         self.verbose = verbose
         
         # Set the before_phase_offset and after_phase_offset
@@ -174,6 +186,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         dataset_config = DATASET_CONFIGS[dataset_name]
         self.before_phase_offset = dataset_config["before_phase_offset"]
         self.after_phase_offset = dataset_config["after_phase_offset"]
+        self.correct_psm1_rotation_tissues = dataset_config["correct_psm1_rotation_tissues"] if "correct_psm1_rotation_tissues" in dataset_config else []
  
         # Initialize the phase_len_dict with defaultdict
         phase_len_dict = defaultdict(list)
@@ -207,6 +220,13 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         # Compute the dataset statistics
         self.ds_statistics_dict = self.compute_dataset_statistics(phase_len_dict)
+        
+        # Add resize transform
+        self.resize = transforms.Resize([self.image_dim,self.image_dim])
+        
+        # Add camera patch names
+        self.camera_patch_names = self.get_camera_patch_names(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag)
+        
         
     def __len__(self):
         # Here this means the number of randomly generated stitched episodes
@@ -245,6 +265,42 @@ class SequenceDataset(torch.utils.data.Dataset):
                 ds_statistics_dict[phase_command]["std"] = np.sqrt(np.sum(np.square(np.array(ds_statistics_dict[phase_command]["std"])))) # Std of Gaussian distribution is sqrt of sum of squares of stds
             
         return ds_statistics_dict
+
+    @staticmethod
+    def get_camera_patch_names(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag):
+        # Returns the camera patch names that are extracted from the camera images
+        if not llava_anyres_flag:
+            camera_patch_names = camera_names
+        else:
+            camera_patch_names = []
+            for camera_name in camera_names:
+                if camera_name in ["endo_psm2", "endo_psm1"]:
+                    camera_patch_names.append(camera_name)
+                else:
+                    if not no_llava_anyres_global_image_flag:
+                        curr_camera_patch_names = [f"{camera_name}_global", f"{camera_name}_left", f"{camera_name}_right"]
+                    else:
+                        curr_camera_patch_names = [f"{camera_name}_left", f"{camera_name}_right"]
+                    camera_patch_names.extend(curr_camera_patch_names)
+        return camera_patch_names
+    
+    @staticmethod
+    def get_num_patches(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag):
+        # Returns the number of patches that are extracted from the camera images
+        if not llava_anyres_flag:
+            num_patches = len(camera_names)
+        else:
+            num_patches = 0
+            for camera_name in camera_names:
+                if camera_name in ["endo_psm2", "endo_psm1"]:
+                    num_patches += 1
+                else:
+                    if not no_llava_anyres_global_image_flag:
+                        num_patches += 3
+                    else:
+                        num_patches += 2
+        return num_patches
+        
 
     def get_embedding_command_phase_for_ts(self, selected_phase_demo_dict, target_ts):
         # Returns the command embedding and the command for the target timestep
@@ -474,24 +530,77 @@ class SequenceDataset(torch.utils.data.Dataset):
                 cam_folder = os.path.join(self.dataset_dir, selected_tissue_sample, ts_phase_folder, ts_demo_folder, cam_name)
                 frame_path = os.path.join(cam_folder, f"frame{str(ts_demo_frame_idx).zfill(6)}{cam_file_suffix}")
                 img = torch.tensor(cv2.cvtColor(cv2.imread(frame_path), cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
-                # Resize the image to desired image size
-                img_resized = transforms.Resize(self.image_dim)(img)
+                 
+                # Apply wrist rotation function on certain tissues of PSM1 - where instrument is not centered
+                if cam_name == "endo_psm1" and selected_tissue_sample in self.correct_psm1_rotation_tissues:
+                    # Rectify rotation of the right wrist cam
+                    angle = -52.0
+                    img_reshaped = img.permute(1, 2, 0).numpy()
+                    img = rotate_image(img_reshaped, angle)
+                    shift_x, shift_y = 10, 0 
+                    img = torch.tensor(shift_image(img, shift_x, shift_y)).permute(2, 0, 1)
                 
-                image_dict[cam_name] = img_resized
+                if self.llava_anyres_flag:
+                    img_patches_list = []
+                    # Add global image (if desired - only for DaVinci camera)
+                    if not self.no_llava_anyres_global_image_flag and cam_name not in ["endo_psm2", "endo_psm1"]: 
+                        global_img_resized = self.resize(img) 
+                        img_patches_list.append(global_img_resized)
+                    
+                    img_width = img.shape[2]
+                    if cam_name == "endo_psm2":
+                        split_idx = int(img_width * self.wrist_images_rel_width)
+                        psm2_important_wrist_patch = self.resize(img[:, :, -split_idx:])
+                        img_patches_list.append(psm2_important_wrist_patch)
+                    elif cam_name == "endo_psm1":
+                        split_idx = int(img_width * self.wrist_images_rel_width)
+                        psm1_important_wrist_patch = self.resize(img[:, :, :split_idx])
+                        img_patches_list.append(psm1_important_wrist_patch)
+                    else:
+                        # If llava_anyres_rel_width > 0.5 then having overlapping patches 
+                        split_idx = int(img_width * self.llava_anyres_rel_width)
+                        img_left_part = self.resize(img[:, :, :split_idx])
+                        img_right_part = self.resize(img[:, :, -split_idx:])
+                        img_patches_list.append(img_left_part)
+                        img_patches_list.append(img_right_part)                   
+     
+                    final_img = torch.stack(img_patches_list, dim=0) # Shape: num_patches, c, h, w
+                else:
+                    if cam_name == "endo_psm2":
+                        split_idx = int(img.shape[2] * self.wrist_images_rel_width)
+                        img = img[:, :, -split_idx:]
+                    elif cam_name == "endo_psm1":
+                        split_idx = int(img.shape[2] * self.wrist_images_rel_width)
+                        img = img[:, :, :split_idx]
+                    
+                    # Resize the image to desired image size
+                    final_img = self.resize(img) # Shape: c, h, w
+                
+                image_dict[cam_name] = final_img
                 
             all_cam_images = [
                 image_dict[cam_name] for cam_name in self.camera_names
             ]
-            all_cam_images = torch.stack(all_cam_images, dim=0)
+            if self.llava_anyres_flag:
+                all_cam_images = torch.concat(all_cam_images, dim=0)
+            else:
+                all_cam_images = torch.stack(all_cam_images, dim=0)
             image_sequence.append(all_cam_images)
 
         # Apply the same transform for all camera images 
-        image_sequence = torch.stack(image_sequence, dim=0) # Shape: ts, cam, c, h, w
-        if self.split_name == "train" and self.input_transforms is not None:
-            image_sequence = image_sequence.reshape(-1, image_sequence.size(2), image_sequence.size(3), image_sequence.size(4)) # Reshape to (ts*cam, c, h, w) for applying the same transform to all camera images
-            image_sequence = self.input_transforms(image_sequence) 
-            image_sequence = image_sequence.reshape(-1, len(self.camera_names), image_sequence.size(1), image_sequence.size(2), image_sequence.size(3)) # Reshape back to (ts, cam, c, h, w)
-        image_sequence = image_sequence / 255.0 
+        image_sequence = torch.stack(image_sequence, dim=0) # Shape: ts, cam (+ its patches), c, h, w
+        if self.split_name == "train" and self.input_transforms["torch"] is not None and self.input_transforms["torch"] is not None:
+            image_sequence = image_sequence.reshape(-1, *image_sequence.shape[-3:]) # Reshape to (ts*cam (+ its patches), c, h, w) for applying the same transform to all camera images
+            if self.input_transforms["torch"] is not None:
+                image_sequence = self.input_transforms["torch"](image_sequence)
+            if self.input_transforms["albumentations"] is not None:
+                images_dict = dict(zip(["image"]+[f"image{img_idx}" for img_idx in range(image_sequence.shape[0]-1)], list(np.array(image_sequence.permute(0, 2, 3, 1)))))
+                images_transformed_dict = self.input_transforms["albumentations"](**images_dict)
+                image_sequence = torch.tensor(np.stack(list(images_transformed_dict.values()), axis=0)).permute(0, 3, 1, 2)
+            image_sequence = image_sequence.reshape(-1, len(self.camera_patch_names), *image_sequence.shape[-3:]) # Reshape back to (ts, cam (+ its patches), c, h, w)
+
+        image_sequence = image_sequence / 255.0
+
 
         if self.use_jaw_values_flag:
             return image_sequence, command_embedding, command_gt, jaw_psm2_psm1_data_sequence, phase_history 
@@ -519,7 +628,11 @@ def load_merged_data(
     prediction_step_size=30,
     recovery_probability = 0.25,
     phase_history_only_phase_switches_flag = False,
-    image_dim=(224, 224),
+    image_dim=224,
+    llava_anyres_flag=False,
+    no_llava_anyres_global_image_flag=False,
+    wrist_images_rel_width=3/4,
+    llava_anyres_rel_width=1/2
 ):
     
     print(f"{history_len=}, {history_step_size=}, {prediction_offset=}")
@@ -564,6 +677,10 @@ def load_merged_data(
     ds_metadata_dict["recovery_probability"] = recovery_probability
     ds_metadata_dict["phase_history_only_phase_switches_flag"] = phase_history_only_phase_switches_flag
     ds_metadata_dict["image_dim"] = image_dim
+    ds_metadata_dict["llava_anyres_flag"] = llava_anyres_flag
+    ds_metadata_dict["no_llava_anyres_global_image_flag"] = no_llava_anyres_global_image_flag
+    ds_metadata_dict["wrist_images_rel_width"] = wrist_images_rel_width
+    ds_metadata_dict["llava_anyres_rel_width"] = llava_anyres_rel_width
 
     # Construct the datasets and the dataset embeddings
     train_datasets, val_datasets, test_datasets = [], [], []
@@ -619,7 +736,11 @@ def load_merged_data(
                         prediction_step_size,
                         recovery_probability,
                         phase_history_only_phase_switches_flag,
-                        image_dim=image_dim)
+                        image_dim=image_dim,
+                        llava_anyres_flag=llava_anyres_flag,
+                        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+                        wrist_images_rel_width=wrist_images_rel_width,
+                        llava_anyres_rel_width=llava_anyres_rel_width)
             )
             
             # Get dataset statistics
@@ -629,7 +750,7 @@ def load_merged_data(
             # Get the command embeddings for the train datasets and update the command embeddings dictionary
             train_command_embeddings_dict = train_datasets[-1].command_embeddings_dict
             command_embeddings_dict.update(train_command_embeddings_dict)
-            
+                        
         elif not test_only:
             # Construct dataset and dataloader for each dataset dir and merge them
             train_datasets.append(SequenceDataset(
@@ -650,7 +771,11 @@ def load_merged_data(
                         prediction_step_size,
                         recovery_probability,
                         phase_history_only_phase_switches_flag,
-                        image_dim=image_dim)
+                        image_dim=image_dim,
+                        llava_anyres_flag=llava_anyres_flag,
+                        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+                        wrist_images_rel_width=wrist_images_rel_width,
+                        llava_anyres_rel_width=llava_anyres_rel_width)
             )
             val_datasets.append(SequenceDataset(
                         "val",
@@ -670,7 +795,11 @@ def load_merged_data(
                         prediction_step_size,
                         recovery_probability,
                         phase_history_only_phase_switches_flag,
-                        image_dim=image_dim)
+                        image_dim=image_dim,
+                        llava_anyres_flag=llava_anyres_flag,
+                        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+                        wrist_images_rel_width=wrist_images_rel_width,
+                        llava_anyres_rel_width=llava_anyres_rel_width)
             )
             
             # Get dataset statistics
@@ -691,7 +820,7 @@ def load_merged_data(
             for command, _ in train_datasets[-1].command_embeddings_dict.values():
                 class_occ_cnt_dict[command] += 1
                 class_occ_cnt_dict["in_total"] += 1
-
+                
         else: 
             test_datasets.append(SequenceDataset(
                         "test",
@@ -711,7 +840,11 @@ def load_merged_data(
                         prediction_step_size,
                         recovery_probability,
                         phase_history_only_phase_switches_flag,
-                        image_dim=image_dim)
+                        image_dim=image_dim,
+                        llava_anyres_flag=llava_anyres_flag,
+                        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+                        wrist_images_rel_width=wrist_images_rel_width,
+                        llava_anyres_rel_width=llava_anyres_rel_width)
             )
             
             # Get dataset statistics
@@ -843,32 +976,37 @@ if __name__ == "__main__":
     dataset_name = "base_chole_clipping_cutting" # "base_chole_clipping_cutting" "phantom_chole" "debugging"
     dataset_dir = os.path.join(os.getenv("PATH_TO_DATASET"), dataset_name) 
     tissue_samples_ids = ["tissue_14"] # "phantom_1" "tissue_12"
-    camera_names = ["endo_psm2", "left_img_dir", "right_img_dir", "endo_psm1"]
-    camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_right.jpg", "_psm1.jpg"]
-    history_len = 3
+    camera_names = ["endo_psm2", "left_img_dir", "endo_psm1"] # "right_img_dir"
+    camera_file_suffixes = ["_psm2.jpg", "_left.jpg", "_psm1.jpg"] # "_right.jpg"
+    history_len = 2
     prediction_offset = 12 # Get command for the current timestep
     history_step_size = 15
     num_episodes = 200 # Number of randlomy generated stitched episodes
     reduced_base_class_set_flag = True
-    phase_history_len = 100
+    phase_history_len = 1
     prediction_step_size = 30
     recovery_probability = 0.4
-    phase_history_only_phase_switches_flag = False
+    phase_history_only_phase_switches_flag = True
     verbose_flag = True
-    image_dim = (360, 480) # H x W
+    image_dim = 336
+    llava_anyres_flag = True
+    no_llava_anyres_global_image_flag = True
+    wrist_images_rel_width = 3/4
+    llava_anyres_rel_width = 1/2
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
-    input_transforms = []
+    torch_input_transforms = []
     
     # Note: Automatic augmentations
-    # input_transforms.append(transforms.RandAugment())
+    torch_input_transforms.append(transforms.RandAugment())
     # input_transforms.append(transforms.TrivialAugmentWide())
     # input_transforms.append(transforms.AugMix())
     
-    # Note: Manual augmetnations
+    # Note: Manual augmentations
+    # Torch augmentations
+    torch_input_transforms.append(transforms.RandomResizedCrop([image_dim,image_dim], scale=(0.8, 1.0)))
     # input_transforms.append(transforms.RandomRotation(15))
     # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # input_transforms.append(transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0))) # TODO: Add here the image size
     
     # input_transforms.append(v2.RandomPerspective(p=0.5))
     # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
@@ -876,7 +1014,22 @@ if __name__ == "__main__":
     # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
     # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # input_transforms.append(transforms.RandomGrayscale(p=0.2))
-    input_transforms = transforms.Compose(input_transforms)
+    
+    # Albumentations augmentations
+    albumentation_input_transforms = []
+
+    min_height, min_width = max(1, image_dim // 40), max(1, image_dim // 40)
+    max_height, max_width = min(image_dim // 30, image_dim), min(image_dim // 30, image_dim) 
+    albumentation_input_transforms.append(A.CoarseDropout(max_holes=128, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, 
+                    min_width=min_width, fill_value=0, p=0.5))
+    
+    # Store the transforms in a dictionary
+    torch_input_transforms = transforms.Compose(torch_input_transforms)
+    num_patches = SequenceDataset.get_num_patches(camera_names, llava_anyres_flag, no_llava_anyres_global_image_flag)
+    num_input_images = num_patches * (history_len + 1)
+    albumentations_additional_targets = dict(zip([f"image{i}" for i in range(num_input_images)], ["image"] * num_input_images))    
+    albumentation_input_transforms = A.Compose(albumentation_input_transforms, additional_targets=albumentations_additional_targets)
+    input_transforms = {"torch": torch_input_transforms, "albumentations": albumentation_input_transforms}
 
     # Create a SequenceDataset instance
     dataset = SequenceDataset(
@@ -898,6 +1051,10 @@ if __name__ == "__main__":
         recovery_probability=recovery_probability,
         phase_history_only_phase_switches_flag=phase_history_only_phase_switches_flag,
         image_dim=image_dim,
+        llava_anyres_flag=llava_anyres_flag,
+        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+        wrist_images_rel_width=wrist_images_rel_width,
+        llava_anyres_rel_width=llava_anyres_rel_width,
         verbose=verbose_flag
     )
 
@@ -905,24 +1062,26 @@ if __name__ == "__main__":
     rdm_idx = np.random.randint(0, len(dataset))
     image_sequence, command_embedding, command, jaw_values, phase_history = dataset[rdm_idx]
 
-    print(f"Image sequence shape: {image_sequence.shape}")
+    print(f"\nImage sequence shape: {image_sequence.shape}")
     print(f"Language embedding shape: {command_embedding.shape}")
     print(f"Command: {command}")
     print(f"Phase history ({phase_history_len=}): {phase_history}")
     print(f"Jaw values ({history_len=}):\n{jaw_values}")
 
     # Create a figure with subplots: one row per timestamp, one column per camera
-    fig, axes = plt.subplots(history_len + 1, len(camera_names), figsize=(15, 10))
+    fig_height = 4 * (history_len + 1)
+    fig_width = len(dataset.camera_patch_names) * 3
+    fig, axes = plt.subplots(history_len + 1, len(dataset.camera_patch_names), figsize=(fig_width, fig_height))
     if history_len == 0:
         axes = axes[np.newaxis, :]
 
     # Loop over each timestamp and camera to plot the images
     for t in range(history_len + 1):
-        for cam_idx, cam_name in enumerate(camera_names):
+        for cam_idx, cam_patch_name in enumerate(dataset.camera_patch_names):
             ax = axes[t, cam_idx]  # Get the specific subplot axis
             img = image_sequence[t, cam_idx].permute(1, 2, 0).numpy()
             ax.imshow(img)
-            ax.set_title(f"{cam_name} at timestep {t}")
+            ax.set_title(f"{cam_patch_name} at timestep {t}")
             ax.axis('off')  # Optionally turn off the axis
 
     # Set title to command
@@ -931,7 +1090,7 @@ if __name__ == "__main__":
     example_dataset_plots_folder_path = os.path.join(path_to_yay_robot, "examples_plots", "dataset")
     if not os.path.exists(example_dataset_plots_folder_path):
         os.makedirs(example_dataset_plots_folder_path)
-    file_name = os.path.join(example_dataset_plots_folder_path, f"dataset_img_{history_len=}_{history_step_size=}.png")
+    file_name = os.path.join(example_dataset_plots_folder_path, f"{tissue_samples_ids=}_{history_len=}_{history_step_size=}_{image_dim=}_{wrist_images_rel_width=}_{llava_anyres_rel_width=}_{llava_anyres_flag=}_{no_llava_anyres_global_image_flag}.png")
     file_path = os.path.join(example_dataset_plots_folder_path, file_name)
     plt.savefig(file_path)
     print(f"Saved {file_name}.")

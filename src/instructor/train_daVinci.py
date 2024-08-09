@@ -16,6 +16,7 @@ import numpy as np
 import wandb
 import torchvision.transforms as transforms
 from torchvision.transforms import v2
+import albumentations as A
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from PIL import Image, ImageDraw, ImageFont
@@ -32,9 +33,10 @@ else:
     raise EnvironmentError("Environment variable PATH_TO_YAY_ROBOT is not set")
 # from aloha_pro.aloha_scripts.utils import crop_resize, random_crop, initialize_model_and_tokenizer, encode_text
 from aloha_pro.aloha_scripts.utils import memory_monitor
-from instructor.dataset_daVinci import load_merged_data
+from instructor.dataset_daVinci import load_merged_data, SequenceDataset
 from instructor.model_daVinci import Instructor
-
+from instructor.utils import set_seed, lr_lambda
+from instructor.constants_daVinci import DATASET_CONFIGS # get dataset parameters
 
 
 def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epoch, max_num_images=10):
@@ -91,7 +93,7 @@ def train(model, dataloader, optimizer, criterion, device, ckpt_dir, current_epo
                 pred = model.decode_logits(logits[img_idx].unsqueeze(0), temperature)[0]
 
                 save_path = os.path.join(ckpt_dir, "training_images", f"epoch_{current_epoch}_{batch_idx}_{img_idx}.jpg")
-                log_combined_image(images[img_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                log_combined_image(images[img_idx], gt, pred, save_path=save_path)
                 
                 if args.log_wandb:
                     wandb.log({f"Training Image {saved_img_cnt}": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {img_idx}")})
@@ -180,11 +182,11 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
             if args.use_jaw_values_flag and args.use_phase_history_flag:
                 logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values, phase_history_indexed)
             elif args.use_jaw_values_flag:
-                logits, temperature, _ = model(images, psm2_psm1_jaw_values=psm2_psm1_jaw_values)
+                logits, temperature, predicted_embedding = model(images, psm2_psm1_jaw_values=psm2_psm1_jaw_values)
             elif args.use_phase_history_flag:
-                logits, temperature, _ = model(images, phase_history=phase_history_indexed)
+                logits, temperature, predicted_embedding = model(images, phase_history=phase_history_indexed)
             else:
-                logits, temperature, _ = model(images)
+                logits, temperature, predicted_embedding = model(images)
             decoded_texts = model.decode_logits(logits, temperature) 
 
             # Store the ground truth and predicted commands for the confusion matrix
@@ -206,25 +208,26 @@ def test(model, dataloader, split_name, device, current_epoch, one_hot_flag, ckp
                     if pred != gt and incorrect_img_cnt < max_num_images:
                         incorrect_img_cnt += 1
                         save_path = os.path.join(ckpt_dir, "predictions", f"{current_epoch=}_incorrect_{batch_idx=}_{rnd_image_idx}.jpg")
-                        log_combined_image(images[rnd_image_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                        log_combined_image(images[rnd_image_idx], gt, pred, save_path=save_path)
                         if args.log_wandb:
                             wandb.log({f"Incorrect Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {rnd_image_idx}")})
                     # Save correct prediction
                     if pred == gt and correct_img_cnt < max_num_images:
                         correct_img_cnt += 1
                         save_path = os.path.join(ckpt_dir, "predictions", f"epoch_{current_epoch}_correct_{batch_idx}_{rnd_image_idx}.jpg")
-                        log_combined_image(images[rnd_image_idx], gt, pred, psm2_psm1_jaw_values, save_path=save_path)
+                        log_combined_image(images[rnd_image_idx], gt, pred, save_path=save_path)
                         if args.log_wandb:
                             wandb.log({f"Correct Prediction": wandb.Image(save_path, caption=f"Epoch {current_epoch}, Batch {batch_idx}, Image {rnd_image_idx}")})
                 
     # Visualize embeddings
-    if not one_hot_flag:
-        # Save the t-SNE visualization of the embeddings of the last batch
-        tnse_plots_folder_path = os.path.join(ckpt_dir, "tsne_plots")
-        if not os.path.exists(tnse_plots_folder_path):
-            os.makedirs(tnse_plots_folder_path, exist_ok=True)
-        save_path = os.path.join(tnse_plots_folder_path, f"embeddings_tsne_epoch_{epoch}.png")
-        log_tsne_plot(candidate_embeddings, candidate_texts, all_predicted_embeddings, all_decoded_texts, all_gt_embeddings, current_epoch, save_path)
+    # TODO: Fix if required
+    # if not one_hot_flag:
+    #     # Save the t-SNE visualization of the embeddings of the last batch
+    #     tnse_plots_folder_path = os.path.join(ckpt_dir, "tsne_plots")
+    #     if not os.path.exists(tnse_plots_folder_path):
+    #         os.makedirs(tnse_plots_folder_path, exist_ok=True)
+    #     save_path = os.path.join(tnse_plots_folder_path, f"embeddings_tsne_epoch_{epoch}.png")
+    #     log_tsne_plot(candidate_embeddings, candidate_texts, all_predicted_embeddings, all_decoded_texts, all_gt_embeddings, current_epoch, save_path)
 
     # Create and save confusion matrix
     conf_matrix_folder_path = os.path.join(ckpt_dir, "confusion_matrices")
@@ -272,7 +275,7 @@ def compute_metrics(current_epoch, all_commands_gt, all_decoded_texts, all_comma
     logger.info(f"Epoch {current_epoch}: Accuracy (at transitions) = {accuracy_curr_epoch_transitions * 100:.2f}% - F1 Score (at transitions) = {f1_score_curr_epoch_transitions * 100:.2f}%")
 
 
-def log_combined_image(images, gt_text, pred_text, psm2_psm1_jaw_values=None, camera_names=None, save_path=None):
+def log_combined_image(images, gt_text, pred_text, save_path=None):
 
     num_ts = images.shape[0]
     
@@ -280,7 +283,6 @@ def log_combined_image(images, gt_text, pred_text, psm2_psm1_jaw_values=None, ca
         # Extract frames for all timesteps and concatenate across width
         for t in range(num_ts):
             combined_image = torch.cat([images[t, cam_idx] for cam_idx in range(images.shape[1])], dim=-1)
-            # TODO: Put the last jaw infos on the PSM2 and PSM1 images (check for the location of the PSMs via the camera names)
             if t == 0: 
                 combined_image_all = combined_image
             else:
@@ -289,7 +291,6 @@ def log_combined_image(images, gt_text, pred_text, psm2_psm1_jaw_values=None, ca
     else:
         # Extract last frame and concatenate across width
         combined_image = torch.cat([images[-1, cam_idx] for cam_idx in range(images.shape[1])], dim=-1)
-        # TODO: Put the last jaw infos on the PSM2 and PSM1 images (check for the location of the PSMs via the camera names)
 
     # Convert to PIL image
     combined_image_pil = transforms.ToPILImage()(combined_image)
@@ -431,7 +432,8 @@ def log_tsne_plot(candidate_embeddings, candidate_commands, predicted_embeddings
 def build_instructor(history_len, history_step_size, prediction_offset, candidate_embeddings, candidate_texts, device, one_hot_flag, camera_names,
                      backbone_model_name, model_init_weights, freeze_backbone_until, use_jaw_values_flag, use_phase_history_flag, 
                      phase_history_len, use_transformer_flag, phase_to_instruction_mapping, phase_history_only_phase_switches_flag,
-                     camera_dropout_prob=0.2, jaw_values_dropout_prob=0.2, phase_history_dropout_prob=0.2, image_dim=(224, 224)):
+                     camera_dropout_prob=0.2, jaw_values_dropout_prob=0.2, phase_history_dropout_prob=0.2, image_dim=224,
+                     llava_anyres_flag=False, no_llava_anyres_global_image_flag=False, wrist_images_rel_width=3/4, llava_anyres_rel_width=0.5):
     # Map command texts to indices
     command_to_index = {command: index for index, command in enumerate(candidate_texts)}
 
@@ -459,10 +461,13 @@ def build_instructor(history_len, history_step_size, prediction_offset, candidat
         camera_dropout_prob=camera_dropout_prob,
         jaw_values_dropout_prob=jaw_values_dropout_prob,
         phase_history_dropout_prob=phase_history_dropout_prob,
-        image_dim=image_dim
+        image_dim=image_dim,
+        llava_anyres_flag=llava_anyres_flag,
+        no_llava_anyres_global_image_flag=no_llava_anyres_global_image_flag,
+        wrist_images_rel_width=wrist_images_rel_width,
+        llava_anyres_rel_width=llava_anyres_rel_width
     ).to(device)
     return model
-
 
 def best_checkpoint(ckpt_dir):
     """
@@ -505,10 +510,7 @@ def latest_checkpoint(ckpt_dir):
     return os.path.join(ckpt_dir, f"epoch_{latest_idx}.ckpt"), latest_idx
 
 
-if __name__ == "__main__":
-    from instructor.utils import set_seed
-    from instructor.constants_daVinci import DATASET_CONFIGS # get dataset parameters
-    
+if __name__ == "__main__":    
     threading.Thread(target=memory_monitor, daemon=True).start()
 
     parser = argparse.ArgumentParser(description="Train and evaluate command prediction model using CLIP.")
@@ -521,6 +523,7 @@ if __name__ == "__main__":
     parser.add_argument('--weight_decay', action='store', type=float, help='weight_decay', default=0.01)
     parser.add_argument('--lr_cycle', action='store', type=int, help='lr_cycle', default=50)
     parser.add_argument('--min_lr', action='store', type=float, help='min_lr', default=5e-5)
+    parser.add_argument('--warmup_epochs', action='store', type=int, help='lr_warmup_epochs', default=5)
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0)
     parser.add_argument('--history_len', action='store', type=int, help='history_len', default=3)
@@ -543,7 +546,6 @@ if __name__ == "__main__":
     # endovit - possible weights: endo700k | imagenet
     parser.add_argument('--model_init_weights', action='store', type=str, help='model_init_weights', default="imagenet")
     parser.add_argument('--freeze_backbone_until', action='store', type=str, help='freeze_backbone_until', default="all") 
-    parser.add_argument('--balanced_class_weights_flag', action='store_true', help='Use balanced class weights for the loss function')
     parser.add_argument('--use_jaw_values_flag', action='store_true', help='Use the jaw values as input to the model')
     parser.add_argument('--use_phase_history_flag', action='store_true', help='Use the history as input to the model')
     parser.add_argument('--phase_history_len', action='store', type=int, help='phases_history_len', default=6)
@@ -554,8 +556,11 @@ if __name__ == "__main__":
     parser.add_argument('--camera_dropout_prob', action='store', type=float, help='camera_dropout_prob', default=0.2)
     parser.add_argument('--jaw_values_dropout_prob', action='store', type=float, help='jaw_values_dropout_prob', default=0.2)
     parser.add_argument('--phase_history_dropout_prob', action='store', type=float, help='phase_history_dropout_prob', default=0.2)
-    parser.add_argument('--image_dim', nargs='+', type=int, help='image_dim', default=[224, 224])
-    # TODO: Decide later here on the augmentation mode used
+    parser.add_argument('--image_dim', action='store', type=int, help='image_dim', default=224)
+    parser.add_argument('--llava_anyres_flag', action='store_true', help='Use the LLAVA AnyRes images')
+    parser.add_argument('--no_llava_anyres_global_image_flag', action='store_true', help='Use the global image instead of the LLAVA AnyRes image')
+    parser.add_argument('--wrist_images_rel_width', action='store', type=float, help='wrist_images_rel_width', default=0.75)
+    parser.add_argument('--llava_anyres_rel_width', action='store', type=float, help='llava_anyres_rel_width', default=0.5)
     
     args = parser.parse_args()
 
@@ -591,28 +596,41 @@ if __name__ == "__main__":
     # ---------------------- Define dataloaders and model ----------------------
 
     # Define transforms/augmentations (resize transformation already applied in __getitem__ method)
-    # TODO: Decide for the best augmentations - maybe load only these defined in the args - rand, trivial, augmix?!
-    input_transforms = []
+    torch_input_transforms = []
     
     # Note: Automatic augmentations
-    input_transforms.append(transforms.RandAugment())
+    torch_input_transforms.append(transforms.RandAugment())
     # input_transforms.append(transforms.TrivialAugmentWide())
     # input_transforms.append(transforms.AugMix())
     
     # Note: Manual augmentations
+    # Torch augmentations
+    torch_input_transforms.append(transforms.RandomResizedCrop([args.image_dim,args.image_dim], scale=(0.8, 1.0)))
     # input_transforms.append(transforms.RandomRotation(15))
     # input_transforms.append(transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)))
-    # input_transforms.append(transforms.RandomResizedCrop(image_dim, scale=(0.8, 1.0)))
     
-    # input_transforms.append(transforms.RandomApply([transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)], p=0.75))
     # input_transforms.append(v2.RandomPerspective(p=0.5))
     # input_transforms.append(v2.RandomPosterize(bits=7, p=0.25))
     # input_transforms.append(v2.RandomAdjustSharpness(2, p=0.25))
     # input_transforms.append(transforms.RandomApply([v2.GaussianBlur(kernel_size=5)], p=0.75))
-    # input_transforms.append(transforms.RandomApply([transforms.RandomResizedCrop(image_dim, scale=(0.5, 1.0))]))
     # input_transforms.append(v2.RandomPhotometricDistort(p=0.8))
     # input_transforms.append(transforms.RandomGrayscale(p=0.2))
-    input_transforms = transforms.Compose(input_transforms)
+    
+    # Albumentations augmentations
+    albumentation_input_transforms = []
+
+    min_height, min_width = max(1, args.image_dim // 40), max(1, args.image_dim // 40)
+    max_height, max_width = min(args.image_dim // 30, args.image_dim), min(args.image_dim // 30, args.image_dim) 
+    albumentation_input_transforms.append(A.CoarseDropout(max_holes=128, max_height=max_height, max_width=max_width, min_holes=1, min_height=min_height, 
+                    min_width=min_width, fill_value=0, p=0.5))
+    
+    # Store the transforms in a dictionary
+    torch_input_transforms = transforms.Compose(torch_input_transforms)
+    num_patches = SequenceDataset.get_num_patches(camera_names, args.llava_anyres_flag, args.no_llava_anyres_global_image_flag)
+    num_input_images = num_patches * (args.history_len + 1)
+    albumentations_additional_targets = dict(zip([f"image{i}" for i in range(num_input_images)], ["image"] * num_input_images))    
+    albumentation_input_transforms = A.Compose(albumentation_input_transforms, additional_targets=albumentations_additional_targets)
+    input_transforms = {"torch": torch_input_transforms, "albumentations": albumentation_input_transforms}
 
     # Data loading
     if args.dagger_ratio and not args.test_only_flag:
@@ -636,7 +654,11 @@ if __name__ == "__main__":
             prediction_step_size=args.prediction_step_size,
             recovery_probability=args.recovery_probability,
             phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag,
-            image_dim=args.image_dim
+            image_dim=args.image_dim,
+            llava_anyres_flag=args.llava_anyres_flag,
+            no_llava_anyres_global_image_flag=args.no_llava_anyres_global_image_flag,
+            wrist_images_rel_width=args.wrist_images_rel_width,
+            llava_anyres_rel_width=args.llava_anyres_rel_width
         )
     elif not args.test_only_flag:
         train_dataloader, val_dataloader, ds_metadata_dict = load_merged_data(
@@ -659,7 +681,11 @@ if __name__ == "__main__":
             prediction_step_size=args.prediction_step_size,
             recovery_probability=args.recovery_probability,
             phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag,
-            image_dim=args.image_dim
+            image_dim=args.image_dim,
+            llava_anyres_flag=args.llava_anyres_flag,
+            no_llava_anyres_global_image_flag=args.no_llava_anyres_global_image_flag,
+            wrist_images_rel_width=args.wrist_images_rel_width,
+            llava_anyres_rel_width=args.llava_anyres_rel_width
         )
     else:
         # TODO: Move this after loading the ckpt and take the metadata from the checkpoint for init the dataloader - also regarding which gallbladders to eval on
@@ -683,7 +709,11 @@ if __name__ == "__main__":
             prediction_step_size=args.prediction_step_size,
             recovery_probability=args.recovery_probability,
             phase_history_only_phase_switches_flag=args.phase_history_only_phase_switches_flag,
-            image_dim=args.image_dim
+            image_dim=args.image_dim,
+            llava_anyres_flag=args.llava_anyres_flag,
+            no_llava_anyres_global_image_flag=args.no_llava_anyres_global_image_flag,
+            wrist_images_rel_width=args.wrist_images_rel_width,
+            llava_anyres_rel_width=args.llava_anyres_rel_width
         )
 
     # Merge ds_metadata_dict with args (use as wandb config)
@@ -736,14 +766,14 @@ if __name__ == "__main__":
                              args.use_jaw_values_flag, args.use_phase_history_flag, args.phase_history_len, 
                              args.use_transformer_flag, phase_to_instruction_mapping, args.phase_history_only_phase_switches_flag,
                              camera_dropout_prob=args.camera_dropout_prob, jaw_values_dropout_prob=args.jaw_values_dropout_prob, 
-                             phase_history_dropout_prob=args.phase_history_dropout_prob, image_dim=args.image_dim)
+                             phase_history_dropout_prob=args.phase_history_dropout_prob, image_dim=args.image_dim,
+                             llava_anyres_flag=args.llava_anyres_flag, no_llava_anyres_global_image_flag=args.no_llava_anyres_global_image_flag,
+                             wrist_images_rel_width=args.wrist_images_rel_width, llava_anyres_rel_width=args.llava_anyres_rel_width)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Add cosine annealing learning rate scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lr_cycle, eta_min=args.min_lr)
-    if args.balanced_class_weights_flag and not args.test_only_flag:
-        criterion = torch.nn.CrossEntropyLoss(weight=ds_metadata_dict["class_weights"].to(device)) # weight the loss based on the number of phases per language instruction
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
+    # Create a LambdaLR scheduler using the custom lr_lambda function
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: lr_lambda(epoch, args.warmup_epochs, args.lr_cycle, args.lr, args.min_lr))
+    criterion = torch.nn.CrossEntropyLoss()
 
     # Load the most recent checkpoint if available
     if not os.path.isdir(args.ckpt_dir):

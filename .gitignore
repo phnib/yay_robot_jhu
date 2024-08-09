@@ -20,3 +20,5 @@ evaluation
 
 *.env
 *.deb
+*.png
+*.jpg
