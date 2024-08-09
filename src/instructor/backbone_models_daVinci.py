@@ -12,7 +12,7 @@ from torchvision import models
 from functools import partial
 from timm.models.vision_transformer import VisionTransformer
 from huggingface_hub import snapshot_download
-from transformers import ViTForImageClassification, ViTImageProcessor
+from transformers import ViTForImageClassification, ViTImageProcessor, CLIPVisionModel
 
 path_to_yay_robot = os.getenv('PATH_TO_YAY_ROBOT')
 if path_to_yay_robot:
@@ -151,39 +151,49 @@ def load_resnet_fe(model_init_weights):
     
     return model, num_features
     
-def load_clip_fe(model_init_weights, device):    
-    if model_init_weights == "imagenet":
+def load_clip_fe(model_init_weights, device, img_size):    
+    if model_init_weights == "imagenet" and img_size == 224:
         # Load the CLIP model
         model = load("ViT-B/32", device=device)[0]
-    elif model_init_weights == "sda":
+    
+        # Set the number of features
+        num_features = model.visual.output_dim
+    elif model_init_weights == "sda" and img_size == 224:
         # Load the SDA-CLIP model
         model_weights_path = Path(__file__).resolve().parent / "submodules" / "clip" / "models" / "soft_task.pt"
         model = load("ViT-B/16", device=device)[0]
         sda_clip_state_dict = torch.load(model_weights_path, map_location=device, weights_only=True)["model_state_dict"]
         model.load_state_dict(sda_clip_state_dict)
+        
+        # Set the number of features
+        num_features = model.visual.output_dim
+    elif model_init_weights == "imagenet" and img_size == 336:
+        model = CLIPVisionModel.from_pretrained("openai/clip-vit-large-patch14-336").to(device)
+        
+        # Set the number of features
+        num_features = model.config.hidden_size
     else:
         raise ValueError(f"Model weights {model_init_weights} not supported yet!")
-        
-    # Set the number of features
-    num_features = model.visual.output_dim
     
     return model, num_features
     
-def init_feature_extractor_model(fe_model_name, model_init_weights, device, freeze_fe_until_layer, img_size=(224,224)):
+def init_feature_extractor_model(fe_model_name, model_init_weights, device, freeze_fe_until_layer, img_size=224):
     
     # Load the desired feature extractor model
-    if fe_model_name == "gsvit":
+    if fe_model_name == "gsvit" and img_size == 224:
         # Load a pre-trained GSViT model (either with SSL or ImageNet weights)
         fe, num_features = load_gsvit_fe(model_init_weights, device)
     elif fe_model_name == "endovit":
         # Load a pre-trained EndoViT model (either with SSL or ImageNet weights)
-        fe, num_features = load_endovit_fe(model_init_weights, img_size=img_size)
-    elif fe_model_name == "resnet":
+        fe, num_features = load_endovit_fe(model_init_weights, img_size=[img_size, img_size])
+    elif fe_model_name == "resnet" and img_size == 224:
         # Load a pre-trained ResNet50 model (either with SelfSupSurg or ImageNet weights)
         fe, num_features = load_resnet_fe(model_init_weights)
     elif fe_model_name == "clip":
         # Load a pre-trained CLIP model
-        fe, num_features = load_clip_fe(model_init_weights, device)
+        fe, num_features = load_clip_fe(model_init_weights, device, img_size)
+    else:
+        raise ValueError(f"Feature extractor model {fe_model_name} with input size {img_size} and model init weights {model_init_weights} not supported yet!")
         
     # Freeze the feature extractor
     for layer_idx, param in enumerate(fe.parameters()):
@@ -205,6 +215,8 @@ def preprocess_inputs_gsvit(images):
     Returns:
         images (torch.Tensor): Images with flipped color channels
     """
+    
+    # TODO: Add here normalization with dataset mean and std
     
     tmp = images[:, 0, :, :].clone()
     images[:, 0, :, :] = images[:, 2, :, :]
@@ -273,23 +285,25 @@ def init_processor(fe_model_name, model_init_weights):
 
 # ------------------------- FE + classifier functions ----------------------------------
 
-def extract_features(fe, fe_model_name, model_init_weights, x):
+def extract_features(fe, fe_model_name, model_init_weights, img_size, x):
     
-    if fe_model_name == "gsvit":
+    if fe_model_name == "gsvit" and img_size == 224:
         features = fe.evit(x)
         # Apply 2D Global Average Pooling
         batch_size, num_features = features.shape[:2]
         flattened_tensor = x.view(batch_size, num_features, -1)  # shape: (Batchsize, num_features, 4x4)
         # Compute average pooling across the last dimension (spatial dimensions)
         features = torch.mean(flattened_tensor, dim=-1)  # shape: (Batchsize, num_features)
-    elif fe_model_name == "endovit" and model_init_weights == "endo700k":
+    elif fe_model_name == "endovit" and model_init_weights == "endo700k" and img_size == 224:
         features = fe.forward_features(x)
         # Apply 1D Global Average Pooling
         features = torch.mean(features, dim=1)
-    elif fe_model_name == "endovit" and model_init_weights == "imagenet":
+    elif fe_model_name == "endovit" and model_init_weights == "imagenet" and img_size == 224:
         features = fe(x).logits
-    elif fe_model_name == "clip":
+    elif fe_model_name == "clip" and model_init_weights in ["imagenet", "sda"] and img_size == 224:
         features = fe.encode_image(x)
+    elif fe_model_name == "clip" and model_init_weights == "imagenet" and img_size == 336:
+        features = fe(x).pooler_output
     else:
         features = fe(x)
         
